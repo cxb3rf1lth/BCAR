@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.0] - 2024-MM-DD
 
 ### Added
+- **DOMscan Integration**: Comprehensive DOM-based XSS and Open Redirect detection
+- **Automated DOM Security Testing**: Integration of DOMscan for client-side vulnerability analysis
+- **Node.js Dependency Management**: Automatic installation and setup of Node.js/npm for DOMscan
+- **DOM Configuration Options**: CLI flags --no-dom and --dom-gui for DOM scan control
+- **Interactive DOM Configuration**: Menu options for DOM scanning settings in interactive mode
+- **Headless Browser Support**: Configurable headless vs GUI mode for DOMscan operations
+- **DOM Security Reporting**: Enhanced text and JSON reports with DOM security findings
 - **Security Hardening**: Comprehensive input validation and sanitization
 - **Path Traversal Protection**: Prevention of directory traversal attacks
 - **Command Injection Prevention**: Secure handling of all user inputs
@@ -26,14 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enhanced Logging**: Structured logging with multiple severity levels
 
 ### Changed
+- **Expanded Scanning Phases**: Added DOM security analysis as Phase 4 in reconnaissance workflow
+- **Enhanced Web Application Testing**: Integrated DOMscan for comprehensive client-side security assessment
+- **Extended Dependency Management**: Added Node.js/npm support for modern web security tools
+- **Improved Interactive Menu**: Added DOM configuration options in interactive interface
+- **Enhanced Configuration File**: Added DOM-specific settings to bcar.conf
+- **Expanded Command Line Interface**: New --no-dom and --dom-gui options for DOM scan control
 - **Improved Command Line Interface**: New options for stealth, timing, and format
 - **Enhanced Port Scanning**: Conditional full scans based on stealth mode
 - **Better Web Application Scanning**: Multiple wordlist fallback mechanisms
-- **Upgraded Report Generation**: Both text and JSON formats available
-- **Optimized Dependency Checking**: Automatic installation with retry logic
+- **Upgraded Report Generation**: Both text and JSON formats available with DOM findings
+- **Optimized Dependency Checking**: Automatic installation with retry logic including DOMscan setup
 - **Enhanced DNS Enumeration**: Better error handling and validation
 - **Improved SSL Analysis**: More comprehensive certificate examination
-- **Updated Usage Examples**: New options and configuration methods
+- **Updated Usage Examples**: New options and configuration methods including DOM scanning
 - **Better Documentation**: Comprehensive README with all new features
 
 ### Fixed
@@ -122,6 +135,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DNS utilities for DNS enumeration
 - WHOIS for domain registration lookup
 - cURL for web connectivity testing
+- Node.js for modern web application testing
+- npm for JavaScript package management
+- DOMscan for DOM-based XSS and Open Redirect detection
 
 ## [Unreleased]
 

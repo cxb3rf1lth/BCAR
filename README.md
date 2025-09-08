@@ -26,6 +26,8 @@ A comprehensive automated reconnaissance framework designed for security profess
 - **Automated dependency installation** - One-command setup
 - **Comprehensive test suite** - Quality assurance
 - **CI/CD pipeline** - Automated testing and validation
+- **DOM-based XSS detection** - Integrated DOMscan for client-side vulnerability testing
+- **Interactive browser support** - Optional GUI mode for DOMscan analysis
 
 ## Overview
 
@@ -40,6 +42,7 @@ BlackCell Auto Recon (BCAR) is a powerful bash-based reconnaissance tool that co
 - **Port Scanning**: Multi-phase port discovery using Nmap with intelligent service detection
 - **Web Application Discovery**: Automated web service identification and analysis
 - **Directory Brute Force**: Comprehensive directory and file discovery using Gobuster
+- **DOM Security Testing**: Automated DOM-based XSS and Open Redirect detection using DOMscan
 - **SSL/TLS Analysis**: Security assessment of encrypted services
 - **Vulnerability Scanning**: Automated vulnerability detection using Nmap scripts
 - **Service Fingerprinting**: Detailed service version and technology identification
@@ -62,6 +65,8 @@ BlackCell Auto Recon (BCAR) is a powerful bash-based reconnaissance tool that co
 - **Comprehensive Logging**: Detailed logging with timestamp and severity levels
 - **Structured Output**: Organized results in categorized directories
 - **Summary Reporting**: Automated generation of executive summary reports
+- **DOM Security Analysis**: Automated client-side vulnerability detection with DOMscan
+- **Headless Browser Testing**: Support for both headless and GUI browser modes
 
 ## Installation
 
@@ -123,6 +128,8 @@ chmod +x bcar.sh
 | `--stealth` | | Enable stealth mode (slower, more evasive) | `false` |
 | `--timing` | | Timing mode: `slow`, `normal`, `fast` | `normal` |
 | `--format` | | Output format: `txt`, `json`, `both` | `txt` |
+| `--no-dom` | | Disable DOM-based XSS and Open Redirect scanning | `false` |
+| `--dom-gui` | | Run DOMscan with visible browser instead of headless | `false` |
 | `-h` | `--help` | Display help information and exit | N/A |
 
 ### Usage Examples
@@ -145,6 +152,21 @@ chmod +x bcar.sh
 #### High-Speed Scanning
 ```bash
 ./bcar.sh -t target.com --timing fast -T 200 --scripts "default,vuln,exploit"
+```
+
+#### DOM Security Assessment with Visible Browser
+```bash
+./bcar.sh -t web-app.com --dom-gui --format both
+```
+
+#### Traditional Scanning without DOM Analysis
+```bash
+./bcar.sh -t legacy-site.com --no-dom --timing normal
+```
+
+#### Comprehensive Security Assessment
+```bash
+./bcar.sh -t target.com --format both -T 100 --scripts "default,vuln,auth,brute"
 ```
 
 #### Custom Configuration
@@ -206,6 +228,8 @@ bcar_results_YYYYMMDD_HHMMSS/
 │   ├── whatweb_*.txt
 │   ├── gobuster_*.txt
 │   └── nikto_*.txt
+├── dom_security/              # DOM-based security testing results
+│   └── domscan_*.txt
 └── ssl/                       # SSL/TLS analysis
     └── ssl_analysis_*.txt
 ```
@@ -229,7 +253,13 @@ bcar_results_YYYYMMDD_HHMMSS/
 3. **Directory Enumeration**: Brute force discovery with multiple wordlist fallbacks
 4. **Vulnerability Assessment**: Automated vulnerability scanning with custom timing
 
-### Phase 4: Security Analysis (New)
+### Phase 4: Web Security Analysis (Enhanced)
+1. **DOM-based XSS Detection**: Automated client-side vulnerability scanning with DOMscan
+2. **Open Redirect Testing**: Discovery of URL redirection vulnerabilities
+3. **Interactive Browser Analysis**: Optional GUI mode for complex web applications
+4. **Endpoint Parameter Testing**: Injection testing on discovered web endpoints
+
+### Phase 5: Infrastructure Security Analysis (New)
 1. **SSL/TLS Assessment**: Analysis of encryption implementations and certificates
 2. **Security Header Analysis**: Review of HTTP security headers
 3. **Input Validation Testing**: Basic security checks on discovered endpoints

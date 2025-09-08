@@ -48,6 +48,9 @@ NMAP_SCRIPTS="default,vuln"
 STEALTH_MODE=false
 TIMING="normal"
 OUTPUT_FORMAT="txt"
+DOM_SCAN_ENABLED=true
+DOM_HEADLESS=true
+DOM_PARAMETERS=true
 
 # Input validation function
 validate_input() {
@@ -96,12 +99,15 @@ usage() {
     echo -e "  --stealth         Enable stealth mode (slower but more evasive)"
     echo -e "  --timing          Timing mode: slow, normal, fast (default: normal)"
     echo -e "  --format          Output format: txt, json, both (default: txt)"
+    echo -e "  --no-dom          Disable DOM-based XSS and Open Redirect scanning"
+    echo -e "  --dom-gui         Run DOMscan with visible browser (default: headless)"
     echo -e "  -h, --help        Show this help message"
     echo
     echo -e "${YELLOW}Examples:${NC}"
     echo -e "  $0 -t 192.168.1.100"
     echo -e "  $0 -t example.com -o custom_output -T 100"
-    echo -e "  $0 --target 10.0.0.1 --wordlist /path/to/wordlist.txt"
+    echo -e "  $0 --target 10.0.0.1 --wordlist /path/to/wordlist.txt --no-dom"
+    echo -e "  $0 -t example.com --stealth --timing slow --format both"
 }
 
 # Logging function
@@ -167,6 +173,8 @@ install_dependencies() {
         for tool in "${missing_tools[@]}"; do
             case "$tool" in
                 "dig") sudo apt-get install -y dnsutils 2>/dev/null || log "WARNING" "Failed to install dnsutils" ;;
+                "node") sudo apt-get install -y nodejs 2>/dev/null || log "WARNING" "Failed to install nodejs" ;;
+                "npm") sudo apt-get install -y npm 2>/dev/null || log "WARNING" "Failed to install npm" ;;
                 *) sudo apt-get install -y "$tool" 2>/dev/null || log "WARNING" "Failed to install $tool" ;;
             esac
         done
@@ -175,6 +183,8 @@ install_dependencies() {
         for tool in "${missing_tools[@]}"; do
             case "$tool" in
                 "dig") sudo yum install -y bind-utils 2>/dev/null || log "WARNING" "Failed to install bind-utils" ;;
+                "node") sudo yum install -y nodejs 2>/dev/null || log "WARNING" "Failed to install nodejs" ;;
+                "npm") sudo yum install -y npm 2>/dev/null || log "WARNING" "Failed to install npm" ;;
                 *) sudo yum install -y "$tool" 2>/dev/null || log "WARNING" "Failed to install $tool" ;;
             esac
         done
@@ -183,6 +193,8 @@ install_dependencies() {
         for tool in "${missing_tools[@]}"; do
             case "$tool" in
                 "dig") sudo dnf install -y bind-utils 2>/dev/null || log "WARNING" "Failed to install bind-utils" ;;
+                "node") sudo dnf install -y nodejs 2>/dev/null || log "WARNING" "Failed to install nodejs" ;;
+                "npm") sudo dnf install -y npm 2>/dev/null || log "WARNING" "Failed to install npm" ;;
                 *) sudo dnf install -y "$tool" 2>/dev/null || log "WARNING" "Failed to install $tool" ;;
             esac
         done
@@ -192,23 +204,91 @@ install_dependencies() {
         for tool in "${missing_tools[@]}"; do
             case "$tool" in
                 "dig") sudo pacman -S --noconfirm dnsutils 2>/dev/null || log "WARNING" "Failed to install dnsutils" ;;
+                "node") sudo pacman -S --noconfirm nodejs 2>/dev/null || log "WARNING" "Failed to install nodejs" ;;
+                "npm") sudo pacman -S --noconfirm npm 2>/dev/null || log "WARNING" "Failed to install npm" ;;
                 *) sudo pacman -S --noconfirm "$tool" 2>/dev/null || log "WARNING" "Failed to install $tool" ;;
             esac
         done
     elif command -v brew &> /dev/null; then
         log "INFO" "Using Homebrew package manager..."
         for tool in "${missing_tools[@]}"; do
-            brew install "$tool" 2>/dev/null || log "WARNING" "Failed to install $tool"
+            case "$tool" in
+                "node") brew install node 2>/dev/null || log "WARNING" "Failed to install node" ;;
+                *) brew install "$tool" 2>/dev/null || log "WARNING" "Failed to install $tool" ;;
+            esac
         done
     else
         log "WARNING" "No supported package manager found. Please install dependencies manually."
         return 1
     fi
 }
+
+# DOMscan installation and setup
+setup_domscan() {
+    log "INFO" "Checking DOMscan installation..."
+    
+    # Check if DOMscan is already installed globally
+    if command -v domscan &> /dev/null; then
+        log "SUCCESS" "DOMscan is already installed"
+        return 0
+    fi
+    
+    # Try to install DOMscan globally
+    log "INFO" "Installing DOMscan..."
+    if npm install -g https://github.com/lauritzh/domscan.git 2>/dev/null; then
+        log "SUCCESS" "DOMscan installed successfully"
+        return 0
+    else
+        log "WARNING" "Failed to install DOMscan globally, trying local installation"
+        
+        # Create a local DOMscan directory in the script directory
+        local domscan_dir="$SCRIPT_DIR/domscan"
+        if [[ ! -d "$domscan_dir" ]]; then
+            git clone https://github.com/lauritzh/domscan.git "$domscan_dir" 2>/dev/null || {
+                log "ERROR" "Failed to clone DOMscan repository"
+                return 1
+            }
+        fi
+        
+        # Install DOMscan dependencies locally
+        cd "$domscan_dir" || {
+            log "ERROR" "Failed to change to DOMscan directory"
+            return 1
+        }
+        
+        if npm install 2>/dev/null; then
+            log "SUCCESS" "DOMscan installed locally at $domscan_dir"
+            cd "$SCRIPT_DIR"
+            return 0
+        else
+            log "ERROR" "Failed to install DOMscan dependencies"
+            cd "$SCRIPT_DIR"
+            return 1
+        fi
+    fi
+}
+
+# Check if DOMscan is available
+check_domscan() {
+    # Check global installation first
+    if command -v domscan &> /dev/null; then
+        echo "domscan"
+        return 0
+    fi
+    
+    # Check local installation
+    local domscan_dir="$SCRIPT_DIR/domscan"
+    if [[ -f "$domscan_dir/domscan.js" ]]; then
+        echo "node $domscan_dir/domscan.js"
+        return 0
+    fi
+    
+    return 1
+}
 check_dependencies() {
     log "INFO" "Checking dependencies..."
     
-    local tools=("nmap" "gobuster" "nikto" "whatweb" "dig" "whois" "curl")
+    local tools=("nmap" "gobuster" "nikto" "whatweb" "dig" "whois" "curl" "node" "npm")
     local missing_tools=()
     
     for tool in "${tools[@]}"; do
@@ -238,6 +318,9 @@ check_dependencies() {
     fi
     
     log "SUCCESS" "All dependencies are available"
+    
+    # Setup DOMscan after basic dependencies are confirmed
+    setup_domscan || log "WARNING" "DOMscan setup failed - DOM security scanning will be unavailable"
 }
 
 # DNS enumeration
@@ -375,6 +458,96 @@ web_scanning() {
     log "SUCCESS" "Web application scanning completed"
 }
 
+# DOM-based XSS and Open Redirect scanning with DOMscan
+dom_security_scan() {
+    if [[ "$DOM_SCAN_ENABLED" != "true" ]]; then
+        log "INFO" "DOM security scanning disabled, skipping"
+        return 0
+    fi
+    
+    log "INFO" "Starting DOM security analysis with DOMscan"
+    
+    mkdir -p "$OUTPUT_DIR/dom_security"
+    
+    # Get DOMscan command
+    local domscan_cmd
+    domscan_cmd="$(check_domscan)" || {
+        log "WARNING" "DOMscan not available, skipping DOM security scanning"
+        return 0
+    }
+    
+    # Check for HTTP services
+    local http_ports=()
+    if [[ -f "$OUTPUT_DIR/nmap/service_scan.txt" ]]; then
+        mapfile -t http_ports < <(grep -E "(http|https)" "$OUTPUT_DIR/nmap/service_scan.txt" | grep -oP '\d+/tcp' | cut -d'/' -f1)
+    fi
+    
+    if [[ ${#http_ports[@]} -eq 0 ]]; then
+        # Default HTTP/HTTPS ports
+        http_ports=(80 443 8080 8443)
+    fi
+    
+    for port in "${http_ports[@]}"; do
+        local scheme="http"
+        if [[ "$port" =~ ^(443|8443)$ ]]; then
+            scheme="https"
+        fi
+        
+        local url="${scheme}://${TARGET}:${port}"
+        
+        # Check if service is actually running
+        if curl -s --connect-timeout 5 --max-time 10 "$url" &>/dev/null; then
+            log "INFO" "Running DOMscan security analysis on port $port"
+            
+            # Prepare DOMscan options based on configuration
+            local domscan_opts=""
+            if [[ "$DOM_HEADLESS" == "true" ]]; then
+                domscan_opts="--headless true"
+            else
+                domscan_opts="--headless false"
+            fi
+            
+            # Run DOMscan with different configurations based on mode
+            if [[ "$STEALTH_MODE" == "true" ]]; then
+                # Stealth mode - more conservative scanning
+                $domscan_cmd "$url" $domscan_opts --throttle > "$OUTPUT_DIR/dom_security/domscan_${port}.txt" 2>/dev/null || {
+                    log "WARNING" "DOMscan failed for $url"
+                    continue
+                }
+            else
+                # Normal mode - comprehensive scanning
+                $domscan_cmd -g -G "$url" $domscan_opts > "$OUTPUT_DIR/dom_security/domscan_${port}.txt" 2>/dev/null || {
+                    log "WARNING" "DOMscan failed for $url"
+                    continue
+                }
+            fi
+            
+            # Parse discovered endpoints from Gobuster for additional DOMscan testing
+            local gobuster_file="$OUTPUT_DIR/web/gobuster_${port}.txt"
+            if [[ -f "$gobuster_file" ]]; then
+                log "INFO" "Testing discovered endpoints with DOMscan on port $port"
+                
+                # Extract successful endpoints (Status: 200, 301, 302, etc.)
+                local endpoints
+                endpoints="$(grep -E "Status: (200|301|302|403)" "$gobuster_file" 2>/dev/null | awk '{print $1}' | head -5)" || true
+                
+                if [[ -n "$endpoints" ]]; then
+                    while IFS= read -r endpoint; do
+                        if [[ -n "$endpoint" ]]; then
+                            local test_url="${url}${endpoint}?test=BCAR_TEST"
+                            log "INFO" "DOMscan testing endpoint: $endpoint"
+                            
+                            $domscan_cmd "$test_url" $domscan_opts > "$OUTPUT_DIR/dom_security/domscan_${port}_${endpoint//\//_}.txt" 2>/dev/null || true
+                        fi
+                    done <<< "$endpoints"
+                fi
+            fi
+        fi
+    done
+    
+    log "SUCCESS" "DOM security analysis completed"
+}
+
 # SSL/TLS analysis
 ssl_analysis() {
     log "INFO" "Starting SSL/TLS analysis"
@@ -445,6 +618,24 @@ generate_report() {
         fi
         echo
         
+        echo "DOM SECURITY FINDINGS:"
+        echo "======================"
+        if [[ -d "$OUTPUT_DIR/dom_security" ]] && find "$OUTPUT_DIR/dom_security" -name "domscan_*.txt" -type f &>/dev/null; then
+            find "$OUTPUT_DIR/dom_security" -name "domscan_*.txt" -exec sh -c '
+                port=$(basename "$1" .txt | cut -d_ -f2)
+                echo "Port $port:"
+                if [[ -s "$1" ]]; then
+                    grep -E "(XSS|Redirect|DOM|Alert|Execution)" "$1" 2>/dev/null | head -5 || echo "  No security issues detected"
+                else
+                    echo "  Scan completed - no output recorded"
+                fi
+                echo
+            ' _ {} \; 2>/dev/null
+        else
+            echo "No DOM security analysis performed"
+        fi
+        echo
+        
     } > "$report_file"
     
     log "SUCCESS" "Summary report generated: $report_file"
@@ -493,6 +684,27 @@ EOF
     # Add web services section
     echo '  "web_services": [],' >> "$json_file"
     
+    # Add DOM security section
+    echo '  "dom_security": {' >> "$json_file"
+    echo '    "findings": [],' >> "$json_file"
+    if [[ -d "$OUTPUT_DIR/dom_security" ]]; then
+        echo '    "scanned_urls": [' >> "$json_file"
+        find "$OUTPUT_DIR/dom_security" -name "domscan_*.txt" -type f 2>/dev/null | while read -r file; do
+            local port
+            port=$(basename "$file" .txt | cut -d_ -f2)
+            local scheme="http"
+            if [[ "$port" =~ ^(443|8443)$ ]]; then
+                scheme="https"
+            fi
+            echo "      \"${scheme}://${TARGET}:${port}\"," >> "$json_file"
+        done 2>/dev/null || true
+        sed -i '$ s/,$//' "$json_file" 2>/dev/null || true  # Remove last comma
+        echo '    ]' >> "$json_file"
+    else
+        echo '    "scanned_urls": []' >> "$json_file"
+    fi
+    echo '  },' >> "$json_file"
+    
     # Add vulnerabilities section
     echo '  "vulnerabilities": []' >> "$json_file"
     
@@ -525,6 +737,7 @@ show_main_menu() {
     echo -e "  Threads: ${YELLOW}$THREADS${NC}"
     echo -e "  Timing: ${YELLOW}$TIMING${NC}"
     echo -e "  Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  DOM Scanning: ${YELLOW}$(if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
     echo -e "  Output Format: ${YELLOW}$OUTPUT_FORMAT${NC}"
     echo
     echo -e "${WHITE}Options:${NC}"
@@ -579,13 +792,15 @@ configure_options() {
         echo -e "  ${GREEN}2)${NC} Timing: ${YELLOW}$TIMING${NC} (slow/normal/fast)"
         echo -e "  ${GREEN}3)${NC} Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
         echo -e "  ${GREEN}4)${NC} Output Format: ${YELLOW}$OUTPUT_FORMAT${NC} (txt/json/both)"
-        echo -e "  ${GREEN}5)${NC} Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
-        echo -e "  ${GREEN}6)${NC} Wordlist: ${YELLOW}${WORDLIST:-"Default"}${NC}"
-        echo -e "  ${GREEN}7)${NC} Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
+        echo -e "  ${GREEN}5)${NC} DOM Scanning: ${YELLOW}$(if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+        echo -e "  ${GREEN}6)${NC} DOM Mode: ${YELLOW}$(if [[ "$DOM_HEADLESS" == "true" ]]; then echo "Headless"; else echo "GUI"; fi)${NC}"
+        echo -e "  ${GREEN}7)${NC} Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
+        echo -e "  ${GREEN}8)${NC} Wordlist: ${YELLOW}${WORDLIST:-"Default"}${NC}"
+        echo -e "  ${GREEN}9)${NC} Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
         echo
         echo -e "  ${RED}0)${NC} Back to Main Menu"
         echo
-        echo -en "${WHITE}Select option to configure [0-7]: ${NC}"
+        echo -en "${WHITE}Select option to configure [0-9]: ${NC}"
         read -r choice
         
         case $choice in
@@ -647,6 +862,28 @@ configure_options() {
                 read -r
                 ;;
             5)
+                if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then
+                    DOM_SCAN_ENABLED="false"
+                    echo -e "${GREEN}✓ DOM scanning disabled${NC}"
+                else
+                    DOM_SCAN_ENABLED="true"
+                    echo -e "${GREEN}✓ DOM scanning enabled${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            6)
+                if [[ "$DOM_HEADLESS" == "true" ]]; then
+                    DOM_HEADLESS="false"
+                    echo -e "${GREEN}✓ DOM mode set to GUI${NC}"
+                else
+                    DOM_HEADLESS="true"
+                    echo -e "${GREEN}✓ DOM mode set to headless${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            7)
                 echo -en "${WHITE}Enter output directory [$OUTPUT_DIR]: ${NC}"
                 read -r new_output
                 if [[ -n "$new_output" ]]; then
@@ -660,7 +897,7 @@ configure_options() {
                 echo -en "${YELLOW}Press Enter to continue...${NC}"
                 read -r
                 ;;
-            6)
+            8)
                 echo -en "${WHITE}Enter wordlist path [current: ${WORDLIST:-"default"}]: ${NC}"
                 read -r new_wordlist
                 if [[ -n "$new_wordlist" ]]; then
@@ -674,7 +911,7 @@ configure_options() {
                 echo -en "${YELLOW}Press Enter to continue...${NC}"
                 read -r
                 ;;
-            7)
+            9)
                 echo -en "${WHITE}Enter Nmap scripts [$NMAP_SCRIPTS]: ${NC}"
                 read -r new_scripts
                 if [[ -n "$new_scripts" ]]; then
@@ -709,6 +946,8 @@ view_configuration() {
     echo -e "  Threads: ${YELLOW}$THREADS${NC}"
     echo -e "  Timing Mode: ${YELLOW}$TIMING${NC}"
     echo -e "  Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  DOM Scanning: ${YELLOW}$(if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  DOM Mode: ${YELLOW}$(if [[ "$DOM_HEADLESS" == "true" ]]; then echo "Headless"; else echo "GUI"; fi)${NC}"
     echo -e "  Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
     echo
     echo -e "${WHITE}Output Settings:${NC}"
@@ -740,6 +979,8 @@ reset_configuration() {
         STEALTH_MODE=false
         TIMING="normal"
         OUTPUT_FORMAT="txt"
+        DOM_SCAN_ENABLED=true
+        DOM_HEADLESS=true
         echo -e "${GREEN}✓ Configuration reset to defaults${NC}"
     else
         echo -e "${YELLOW}Reset cancelled${NC}"
@@ -859,28 +1100,32 @@ run_scan() {
     # Create output directory
     mkdir -p "$OUTPUT_DIR"
     
-    local total_phases=5
+    local total_phases=6
     local current_phase=0
     
     # Run reconnaissance modules with progress tracking
     ((current_phase++))
-    show_progress $current_phase $total_phases "DNS Enumeration"
+    show_progress "$current_phase" "$total_phases" "DNS Enumeration"
     dns_enumeration
     
     ((current_phase++))
-    show_progress $current_phase $total_phases "WHOIS Lookup"
+    show_progress "$current_phase" "$total_phases" "WHOIS Lookup"
     whois_lookup
     
     ((current_phase++))
-    show_progress $current_phase $total_phases "Port Scanning"
+    show_progress "$current_phase" "$total_phases" "Port Scanning"
     port_scanning
     
     ((current_phase++))
-    show_progress $current_phase $total_phases "Web Application Scanning"
+    show_progress "$current_phase" "$total_phases" "Web Application Scanning"
     web_scanning
     
     ((current_phase++))
-    show_progress $current_phase $total_phases "SSL Analysis & Report Generation"
+    show_progress "$current_phase" "$total_phases" "DOM Security Analysis"
+    dom_security_scan
+    
+    ((current_phase++))
+    show_progress "$current_phase" "$total_phases" "SSL Analysis & Report Generation"
     ssl_analysis
     
     # Generate final reports based on format selection
@@ -946,6 +1191,14 @@ while [[ $# -gt 0 ]]; do
         --format)
             OUTPUT_FORMAT="$2"
             shift 2
+            ;;
+        --no-dom)
+            DOM_SCAN_ENABLED=false
+            shift
+            ;;
+        --dom-gui)
+            DOM_HEADLESS=false
+            shift
             ;;
         -h|--help)
             print_banner
