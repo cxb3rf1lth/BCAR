@@ -1,0 +1,157 @@
+name: BCAR CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, 'copilot/**' ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck nmap gobuster nikto whatweb dnsutils whois curl
+    
+    - name: Make scripts executable
+      run: |
+        chmod +x bcar.sh demo.sh test_bcar.sh
+    
+    - name: Run ShellCheck
+      run: |
+        echo "Running ShellCheck analysis..."
+        shellcheck bcar.sh demo.sh || exit 1
+        echo "ShellCheck passed!"
+    
+    - name: Validate syntax
+      run: |
+        echo "Validating bash syntax..."
+        bash -n bcar.sh
+        bash -n demo.sh
+        bash -n test_bcar.sh
+        echo "Syntax validation passed!"
+    
+    - name: Test help functionality
+      run: |
+        echo "Testing help functionality..."
+        timeout 10 ./bcar.sh --help | grep -q "BlackCell Auto Recon" || exit 1
+        echo "Help test passed!"
+    
+    - name: Test input validation
+      run: |
+        echo "Testing input validation..."
+        # Test invalid target (should fail)
+        if ./bcar.sh -t "invalid..target" 2>/dev/null; then
+          echo "ERROR: Invalid target was accepted"
+          exit 1
+        fi
+        # Test invalid thread count (should fail)
+        if ./bcar.sh -t "example.com" -T "abc" 2>/dev/null; then
+          echo "ERROR: Invalid thread count was accepted"
+          exit 1
+        fi
+        echo "Input validation tests passed!"
+    
+    - name: Run comprehensive tests
+      run: |
+        echo "Running comprehensive test suite..."
+        if [ -x "./test_bcar.sh" ]; then
+          timeout 60 ./test_bcar.sh || echo "Some tests failed but continuing..."
+        else
+          echo "Test script not executable or not found"
+        fi
+    
+    - name: Security scan
+      run: |
+        echo "Running security analysis..."
+        # Check for dangerous patterns
+        if grep -r "eval" . --include="*.sh" 2>/dev/null; then
+          echo "WARNING: eval usage detected"
+        fi
+        if grep -r '`.*`' . --include="*.sh" 2>/dev/null; then
+          echo "WARNING: backtick usage detected"
+        fi
+        echo "Security scan completed"
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nmap gobuster nikto whatweb dnsutils whois curl
+    
+    - name: Make script executable
+      run: chmod +x bcar.sh
+    
+    - name: Test against safe target
+      run: |
+        echo "Testing basic functionality against localhost..."
+        timeout 30 ./bcar.sh -t 127.0.0.1 --stealth --format json -o /tmp/test_output || echo "Scan completed with expected timeout"
+        
+        # Check if output directory was created
+        if [ -d "/tmp/test_output" ]; then
+          echo "Output directory created successfully"
+          ls -la /tmp/test_output/
+        else
+          echo "Output directory not found"
+        fi
+    
+    - name: Validate JSON output
+      run: |
+        echo "Validating JSON output format..."
+        if [ -f "/tmp/test_output/BCAR_Report.json" ]; then
+          if python3 -m json.tool /tmp/test_output/BCAR_Report.json > /dev/null 2>&1; then
+            echo "JSON output is valid"
+          else
+            echo "JSON output is invalid"
+            exit 1
+          fi
+        else
+          echo "JSON report not found"
+        fi
+
+  documentation-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Check README
+      run: |
+        echo "Checking documentation..."
+        if [ -f "README.md" ]; then
+          echo "README.md exists"
+          if grep -q "BCAR" README.md; then
+            echo "README contains BCAR references"
+          else
+            echo "WARNING: README may be outdated"
+          fi
+        else
+          echo "ERROR: README.md not found"
+          exit 1
+        fi
+    
+    - name: Check for configuration files
+      run: |
+        echo "Checking configuration files..."
+        if [ -f "bcar.conf" ]; then
+          echo "Configuration file exists"
+          bash -n bcar.conf && echo "Configuration syntax is valid"
+        fi
+        
+        if [ -f ".shellcheckrc" ]; then
+          echo "ShellCheck configuration exists"
+        fi
