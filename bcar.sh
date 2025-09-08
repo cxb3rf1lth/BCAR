@@ -111,21 +111,46 @@ log() {
     local timestamp
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
     
+    # Create output directory if it doesn't exist and we need to log to file
+    if [[ ! -d "$OUTPUT_DIR" ]]; then
+        mkdir -p "$OUTPUT_DIR" 2>/dev/null || true
+    fi
+    
     case "$level" in
         "INFO")
-            echo -e "${CYAN}[INFO]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            if [[ -d "$OUTPUT_DIR" ]]; then
+                echo -e "${CYAN}[INFO]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            else
+                echo -e "${CYAN}[INFO]${NC} ${timestamp} - $message"
+            fi
             ;;
         "SUCCESS")
-            echo -e "${GREEN}[SUCCESS]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            if [[ -d "$OUTPUT_DIR" ]]; then
+                echo -e "${GREEN}[SUCCESS]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            else
+                echo -e "${GREEN}[SUCCESS]${NC} ${timestamp} - $message"
+            fi
             ;;
         "WARNING")
-            echo -e "${YELLOW}[WARNING]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            if [[ -d "$OUTPUT_DIR" ]]; then
+                echo -e "${YELLOW}[WARNING]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            else
+                echo -e "${YELLOW}[WARNING]${NC} ${timestamp} - $message"
+            fi
             ;;
         "ERROR")
-            echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            if [[ -d "$OUTPUT_DIR" ]]; then
+                echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            else
+                echo -e "${RED}[ERROR]${NC} ${timestamp} - $message"
+            fi
             ;;
         *)
-            echo -e "${RED}[UNKNOWN]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            if [[ -d "$OUTPUT_DIR" ]]; then
+                echo -e "${RED}[UNKNOWN]${NC} ${timestamp} - $message" | tee -a "$OUTPUT_DIR/bcar.log"
+            else
+                echo -e "${RED}[UNKNOWN]${NC} ${timestamp} - $message"
+            fi
             ;;
     esac
 }
@@ -485,6 +510,330 @@ load_config() {
         source "$config_file"
     fi
 }
+
+# Interactive main menu
+show_main_menu() {
+    clear
+    print_banner
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                 MAIN MENU${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo
+    echo -e "${CYAN}Current Configuration:${NC}"
+    echo -e "  Target: ${YELLOW}${TARGET:-"Not set"}${NC}"
+    echo -e "  Output Dir: ${YELLOW}$OUTPUT_DIR${NC}"
+    echo -e "  Threads: ${YELLOW}$THREADS${NC}"
+    echo -e "  Timing: ${YELLOW}$TIMING${NC}"
+    echo -e "  Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  Output Format: ${YELLOW}$OUTPUT_FORMAT${NC}"
+    echo
+    echo -e "${WHITE}Options:${NC}"
+    echo -e "  ${GREEN}1)${NC} Set Target (IP/Domain)"
+    echo -e "  ${GREEN}2)${NC} Configure Scan Options"
+    echo -e "  ${GREEN}3)${NC} Start Reconnaissance Scan"
+    echo -e "  ${GREEN}4)${NC} View Configuration"
+    echo -e "  ${GREEN}5)${NC} Reset to Defaults"
+    echo -e "  ${GREEN}6)${NC} Help"
+    echo -e "  ${RED}0)${NC} Exit"
+    echo
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -en "${WHITE}Enter your choice [0-6]: ${NC}"
+}
+
+# Interactive target input
+set_target_interactive() {
+    echo
+    echo -e "${CYAN}═══ Target Configuration ═══${NC}"
+    echo -e "${YELLOW}Enter target IP address or domain name:${NC}"
+    echo -e "${WHITE}Examples: 192.168.1.100, example.com, subdomain.target.org${NC}"
+    echo
+    echo -en "${WHITE}Target: ${NC}"
+    read -r user_target
+    
+    if [[ -n "$user_target" ]]; then
+        if validate_input "$user_target" "target"; then
+            TARGET="$user_target"
+            echo -e "${GREEN}✓ Target set to: $TARGET${NC}"
+        else
+            echo -e "${RED}✗ Invalid target format${NC}"
+            echo -en "${YELLOW}Press Enter to continue...${NC}"
+            read -r
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}No target entered${NC}"
+    fi
+    
+    echo -en "${YELLOW}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Interactive options configuration
+configure_options() {
+    while true; do
+        clear
+        echo -e "${CYAN}═══ Scan Options Configuration ═══${NC}"
+        echo
+        echo -e "${WHITE}Current Settings:${NC}"
+        echo -e "  ${GREEN}1)${NC} Threads: ${YELLOW}$THREADS${NC}"
+        echo -e "  ${GREEN}2)${NC} Timing: ${YELLOW}$TIMING${NC} (slow/normal/fast)"
+        echo -e "  ${GREEN}3)${NC} Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+        echo -e "  ${GREEN}4)${NC} Output Format: ${YELLOW}$OUTPUT_FORMAT${NC} (txt/json/both)"
+        echo -e "  ${GREEN}5)${NC} Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
+        echo -e "  ${GREEN}6)${NC} Wordlist: ${YELLOW}${WORDLIST:-"Default"}${NC}"
+        echo -e "  ${GREEN}7)${NC} Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
+        echo
+        echo -e "  ${RED}0)${NC} Back to Main Menu"
+        echo
+        echo -en "${WHITE}Select option to configure [0-7]: ${NC}"
+        read -r choice
+        
+        case $choice in
+            1)
+                echo -en "${WHITE}Enter number of threads (1-1000) [$THREADS]: ${NC}"
+                read -r new_threads
+                if [[ -n "$new_threads" ]] && validate_input "$new_threads" "threads"; then
+                    THREADS="$new_threads"
+                    echo -e "${GREEN}✓ Threads set to: $THREADS${NC}"
+                else
+                    echo -e "${RED}✗ Invalid thread count${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            2)
+                echo -e "${WHITE}Timing options:${NC}"
+                echo -e "  ${GREEN}1)${NC} slow (stealthy, T1-T2)"
+                echo -e "  ${GREEN}2)${NC} normal (balanced, T4)"
+                echo -e "  ${GREEN}3)${NC} fast (aggressive, T5)"
+                echo -en "${WHITE}Select timing [1-3]: ${NC}"
+                read -r timing_choice
+                case $timing_choice in
+                    1) TIMING="slow"; echo -e "${GREEN}✓ Timing set to: slow${NC}" ;;
+                    2) TIMING="normal"; echo -e "${GREEN}✓ Timing set to: normal${NC}" ;;
+                    3) TIMING="fast"; echo -e "${GREEN}✓ Timing set to: fast${NC}" ;;
+                    *) echo -e "${RED}✗ Invalid choice${NC}" ;;
+                esac
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            3)
+                if [[ "$STEALTH_MODE" == "true" ]]; then
+                    STEALTH_MODE="false"
+                    echo -e "${GREEN}✓ Stealth mode disabled${NC}"
+                else
+                    STEALTH_MODE="true"
+                    TIMING="slow"
+                    THREADS=10
+                    echo -e "${GREEN}✓ Stealth mode enabled (timing and threads adjusted)${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            4)
+                echo -e "${WHITE}Output format options:${NC}"
+                echo -e "  ${GREEN}1)${NC} txt (text format)"
+                echo -e "  ${GREEN}2)${NC} json (JSON format)"
+                echo -e "  ${GREEN}3)${NC} both (text and JSON)"
+                echo -en "${WHITE}Select format [1-3]: ${NC}"
+                read -r format_choice
+                case $format_choice in
+                    1) OUTPUT_FORMAT="txt"; echo -e "${GREEN}✓ Output format set to: txt${NC}" ;;
+                    2) OUTPUT_FORMAT="json"; echo -e "${GREEN}✓ Output format set to: json${NC}" ;;
+                    3) OUTPUT_FORMAT="both"; echo -e "${GREEN}✓ Output format set to: both${NC}" ;;
+                    *) echo -e "${RED}✗ Invalid choice${NC}" ;;
+                esac
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            5)
+                echo -en "${WHITE}Enter output directory [$OUTPUT_DIR]: ${NC}"
+                read -r new_output
+                if [[ -n "$new_output" ]]; then
+                    if validate_input "$new_output" "path"; then
+                        OUTPUT_DIR="$new_output"
+                        echo -e "${GREEN}✓ Output directory set to: $OUTPUT_DIR${NC}"
+                    else
+                        echo -e "${RED}✗ Invalid directory path${NC}"
+                    fi
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            6)
+                echo -en "${WHITE}Enter wordlist path [current: ${WORDLIST:-"default"}]: ${NC}"
+                read -r new_wordlist
+                if [[ -n "$new_wordlist" ]]; then
+                    if [[ -f "$new_wordlist" ]]; then
+                        WORDLIST="$new_wordlist"
+                        echo -e "${GREEN}✓ Wordlist set to: $WORDLIST${NC}"
+                    else
+                        echo -e "${RED}✗ Wordlist file not found${NC}"
+                    fi
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            7)
+                echo -en "${WHITE}Enter Nmap scripts [$NMAP_SCRIPTS]: ${NC}"
+                read -r new_scripts
+                if [[ -n "$new_scripts" ]]; then
+                    NMAP_SCRIPTS="$new_scripts"
+                    echo -e "${GREEN}✓ Nmap scripts set to: $NMAP_SCRIPTS${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo -e "${RED}✗ Invalid option${NC}"
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+        esac
+    done
+}
+
+# View current configuration
+view_configuration() {
+    clear
+    echo -e "${CYAN}═══ Current Configuration ═══${NC}"
+    echo
+    echo -e "${WHITE}Target Settings:${NC}"
+    echo -e "  Target: ${YELLOW}${TARGET:-"Not set"}${NC}"
+    echo -e "  Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
+    echo
+    echo -e "${WHITE}Scan Settings:${NC}"
+    echo -e "  Threads: ${YELLOW}$THREADS${NC}"
+    echo -e "  Timing Mode: ${YELLOW}$TIMING${NC}"
+    echo -e "  Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
+    echo
+    echo -e "${WHITE}Output Settings:${NC}"
+    echo -e "  Format: ${YELLOW}$OUTPUT_FORMAT${NC}"
+    echo
+    echo -e "${WHITE}Wordlist:${NC}"
+    echo -e "  Path: ${YELLOW}${WORDLIST:-"Using default"}${NC}"
+    if [[ -n "$WORDLIST" ]] && [[ -f "$WORDLIST" ]]; then
+        local wordcount
+        wordcount=$(wc -l < "$WORDLIST" 2>/dev/null || echo "unknown")
+        echo -e "  Entries: ${YELLOW}$wordcount${NC}"
+    fi
+    echo
+    echo -en "${YELLOW}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Reset configuration to defaults
+reset_configuration() {
+    echo
+    echo -e "${YELLOW}Reset all settings to defaults? [y/N]: ${NC}"
+    read -r confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        OUTPUT_DIR="bcar_results_$(date +%Y%m%d_%H%M%S)"
+        TARGET=""
+        THREADS=50
+        WORDLIST="$DEFAULT_WORDLIST"
+        NMAP_SCRIPTS="default,vuln"
+        STEALTH_MODE=false
+        TIMING="normal"
+        OUTPUT_FORMAT="txt"
+        echo -e "${GREEN}✓ Configuration reset to defaults${NC}"
+    else
+        echo -e "${YELLOW}Reset cancelled${NC}"
+    fi
+    echo -en "${YELLOW}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Start scan from menu
+start_scan_interactive() {
+    if [[ -z "$TARGET" ]]; then
+        echo
+        echo -e "${RED}✗ No target configured!${NC}"
+        echo -e "${YELLOW}Please set a target first (option 1)${NC}"
+        echo -en "${YELLOW}Press Enter to continue...${NC}"
+        read -r
+        return 1
+    fi
+    
+    echo
+    echo -e "${CYAN}═══ Scan Summary ═══${NC}"
+    echo -e "${WHITE}Target: ${GREEN}$TARGET${NC}"
+    echo -e "${WHITE}Output: ${GREEN}$OUTPUT_DIR${NC}"
+    echo -e "${WHITE}Threads: ${GREEN}$THREADS${NC}"
+    echo -e "${WHITE}Timing: ${GREEN}$TIMING${NC}"
+    echo -e "${WHITE}Stealth: ${GREEN}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo
+    echo -e "${YELLOW}Start reconnaissance scan? [Y/n]: ${NC}"
+    read -r confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo -e "${YELLOW}Scan cancelled${NC}"
+        echo -en "${YELLOW}Press Enter to continue...${NC}"
+        read -r
+        return 1
+    fi
+    
+    echo
+    echo -e "${GREEN}Starting BCAR reconnaissance scan...${NC}"
+    echo
+    run_scan
+    
+    echo
+    echo -e "${GREEN}✓ Scan completed!${NC}"
+    echo -e "${CYAN}Results saved to: $OUTPUT_DIR${NC}"
+    echo -en "${YELLOW}Press Enter to return to main menu...${NC}"
+    read -r
+}
+
+# Interactive main menu loop
+main_menu() {
+    # Initialize output directory for menu usage
+    OUTPUT_DIR="bcar_results_$(date +%Y%m%d_%H%M%S)"
+    
+    while true; do
+        show_main_menu
+        read -r choice
+        
+        case $choice in
+            1)
+                set_target_interactive
+                ;;
+            2)
+                configure_options
+                ;;
+            3)
+                start_scan_interactive
+                ;;
+            4)
+                view_configuration
+                ;;
+            5)
+                reset_configuration
+                ;;
+            6)
+                clear
+                print_banner
+                usage
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            0)
+                echo
+                echo -e "${CYAN}Thank you for using BCAR!${NC}"
+                exit 0
+                ;;
+            *)
+                echo
+                echo -e "${RED}✗ Invalid option. Please try again.${NC}"
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+        esac
+    done
+}
 show_progress() {
     local current="$1"
     local total="$2"
@@ -618,20 +967,33 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Main execution
-print_banner
-
-# Load configuration if available
-load_config
-
-# Validate input
-if [[ -z "$TARGET" ]]; then
-    echo -e "${RED}Error: Target is required${NC}"
-    usage
-    exit 1
+# If no arguments provided, launch interactive menu
+if [[ $# -eq 0 ]]; then
+    # Load configuration if available
+    load_config
+    
+    # Check dependencies before starting menu
+    check_dependencies
+    
+    # Launch interactive menu
+    main_menu
+else
+    # Command-line mode (existing behavior)
+    print_banner
+    
+    # Load configuration if available
+    load_config
+    
+    # Validate input
+    if [[ -z "$TARGET" ]]; then
+        echo -e "${RED}Error: Target is required${NC}"
+        usage
+        exit 1
+    fi
+    
+    # Check dependencies
+    check_dependencies
+    
+    # Start scanning
+    run_scan
 fi
-
-# Check dependencies
-check_dependencies
-
-# Start scanning
-run_scan
