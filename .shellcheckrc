@@ -1,0 +1,22 @@
+# ShellCheck configuration for BCAR
+# Disable specific warnings that are acceptable in this context
+
+# SC2034: Variable appears unused (for color codes and configuration variables)
+disable=SC2034
+
+# SC2086: Double quote to prevent globbing (we want word splitting for some arrays)
+# This will be addressed on a case-by-case basis
+
+# Enable additional checks
+enable=add-default-case
+enable=avoid-nullary-conditions
+enable=check-extra-masked-returns
+enable=check-set-e-suppressed
+enable=quote-safe-variables
+enable=require-double-brackets
+
+# Set shell dialect
+shell=bash
+
+# Set source path for included files
+source-path=SCRIPTDIR
