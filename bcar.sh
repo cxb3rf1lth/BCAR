@@ -737,6 +737,7 @@ show_main_menu() {
     echo -e "  Threads: ${YELLOW}$THREADS${NC}"
     echo -e "  Timing: ${YELLOW}$TIMING${NC}"
     echo -e "  Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  DOM Scanning: ${YELLOW}$(if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
     echo -e "  Output Format: ${YELLOW}$OUTPUT_FORMAT${NC}"
     echo
     echo -e "${WHITE}Options:${NC}"
@@ -791,13 +792,15 @@ configure_options() {
         echo -e "  ${GREEN}2)${NC} Timing: ${YELLOW}$TIMING${NC} (slow/normal/fast)"
         echo -e "  ${GREEN}3)${NC} Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
         echo -e "  ${GREEN}4)${NC} Output Format: ${YELLOW}$OUTPUT_FORMAT${NC} (txt/json/both)"
-        echo -e "  ${GREEN}5)${NC} Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
-        echo -e "  ${GREEN}6)${NC} Wordlist: ${YELLOW}${WORDLIST:-"Default"}${NC}"
-        echo -e "  ${GREEN}7)${NC} Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
+        echo -e "  ${GREEN}5)${NC} DOM Scanning: ${YELLOW}$(if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+        echo -e "  ${GREEN}6)${NC} DOM Mode: ${YELLOW}$(if [[ "$DOM_HEADLESS" == "true" ]]; then echo "Headless"; else echo "GUI"; fi)${NC}"
+        echo -e "  ${GREEN}7)${NC} Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
+        echo -e "  ${GREEN}8)${NC} Wordlist: ${YELLOW}${WORDLIST:-"Default"}${NC}"
+        echo -e "  ${GREEN}9)${NC} Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
         echo
         echo -e "  ${RED}0)${NC} Back to Main Menu"
         echo
-        echo -en "${WHITE}Select option to configure [0-7]: ${NC}"
+        echo -en "${WHITE}Select option to configure [0-9]: ${NC}"
         read -r choice
         
         case $choice in
@@ -859,6 +862,28 @@ configure_options() {
                 read -r
                 ;;
             5)
+                if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then
+                    DOM_SCAN_ENABLED="false"
+                    echo -e "${GREEN}✓ DOM scanning disabled${NC}"
+                else
+                    DOM_SCAN_ENABLED="true"
+                    echo -e "${GREEN}✓ DOM scanning enabled${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            6)
+                if [[ "$DOM_HEADLESS" == "true" ]]; then
+                    DOM_HEADLESS="false"
+                    echo -e "${GREEN}✓ DOM mode set to GUI${NC}"
+                else
+                    DOM_HEADLESS="true"
+                    echo -e "${GREEN}✓ DOM mode set to headless${NC}"
+                fi
+                echo -en "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+                ;;
+            7)
                 echo -en "${WHITE}Enter output directory [$OUTPUT_DIR]: ${NC}"
                 read -r new_output
                 if [[ -n "$new_output" ]]; then
@@ -872,7 +897,7 @@ configure_options() {
                 echo -en "${YELLOW}Press Enter to continue...${NC}"
                 read -r
                 ;;
-            6)
+            8)
                 echo -en "${WHITE}Enter wordlist path [current: ${WORDLIST:-"default"}]: ${NC}"
                 read -r new_wordlist
                 if [[ -n "$new_wordlist" ]]; then
@@ -886,7 +911,7 @@ configure_options() {
                 echo -en "${YELLOW}Press Enter to continue...${NC}"
                 read -r
                 ;;
-            7)
+            9)
                 echo -en "${WHITE}Enter Nmap scripts [$NMAP_SCRIPTS]: ${NC}"
                 read -r new_scripts
                 if [[ -n "$new_scripts" ]]; then
@@ -921,6 +946,8 @@ view_configuration() {
     echo -e "  Threads: ${YELLOW}$THREADS${NC}"
     echo -e "  Timing Mode: ${YELLOW}$TIMING${NC}"
     echo -e "  Stealth Mode: ${YELLOW}$(if [[ "$STEALTH_MODE" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  DOM Scanning: ${YELLOW}$(if [[ "$DOM_SCAN_ENABLED" == "true" ]]; then echo "Enabled"; else echo "Disabled"; fi)${NC}"
+    echo -e "  DOM Mode: ${YELLOW}$(if [[ "$DOM_HEADLESS" == "true" ]]; then echo "Headless"; else echo "GUI"; fi)${NC}"
     echo -e "  Nmap Scripts: ${YELLOW}$NMAP_SCRIPTS${NC}"
     echo
     echo -e "${WHITE}Output Settings:${NC}"
@@ -952,6 +979,8 @@ reset_configuration() {
         STEALTH_MODE=false
         TIMING="normal"
         OUTPUT_FORMAT="txt"
+        DOM_SCAN_ENABLED=true
+        DOM_HEADLESS=true
         echo -e "${GREEN}✓ Configuration reset to defaults${NC}"
     else
         echo -e "${YELLOW}Reset cancelled${NC}"

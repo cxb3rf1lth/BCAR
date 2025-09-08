@@ -305,6 +305,48 @@ print_summary() {
     fi
 }
 
+# Test 11: DOM scanning integration
+test_dom_integration() {
+    echo -e "${BLUE}Testing DOM scanning integration...${NC}"
+    
+    # Test DOM configuration options
+    if grep -q "DOM_SCAN_ENABLED" "$BCAR_SCRIPT" 2>/dev/null; then
+        test_log "PASS" "DOM configuration variables found"
+    else
+        test_log "FAIL" "DOM configuration variables missing"
+    fi
+    
+    # Test DOM functions exist
+    if grep -q "dom_security_scan" "$BCAR_SCRIPT" 2>/dev/null; then
+        test_log "PASS" "DOM security scan function found"
+    else
+        test_log "FAIL" "DOM security scan function missing"
+    fi
+    
+    # Test DOM command line options
+    if grep -q "no-dom\|dom-gui" "$BCAR_SCRIPT" 2>/dev/null; then
+        test_log "PASS" "DOM command line options found"
+    else
+        test_log "FAIL" "DOM command line options missing"
+    fi
+    
+    # Test DOMscan setup function
+    if grep -q "setup_domscan\|check_domscan" "$BCAR_SCRIPT" 2>/dev/null; then
+        test_log "PASS" "DOMscan setup functions found"
+    else
+        test_log "FAIL" "DOMscan setup functions missing"
+    fi
+    
+    # Test help includes DOM options
+    local help_output
+    help_output="$("$BCAR_SCRIPT" --help 2>&1)" || true
+    if echo "$help_output" | grep -q "no-dom\|dom-gui"; then
+        test_log "PASS" "DOM options included in help text"
+    else
+        test_log "FAIL" "DOM options missing from help text"
+    fi
+}
+
 # Main test execution
 main() {
     echo -e "${YELLOW}Starting BCAR Test Suite...${NC}"
@@ -327,6 +369,7 @@ main() {
     test_security
     test_error_handling
     test_performance
+    test_dom_integration
     
     cleanup_tests
     print_summary
