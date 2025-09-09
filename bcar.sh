@@ -60,7 +60,7 @@ validate_input() {
     case "$type" in
         "target")
             # Basic validation for IP addresses and domain names
-            if [[ ! "$input" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?$ ]] && 
+            if [[ ! "$input" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,61}[a-zA-Z0-9])?$ ]] && 
                [[ ! "$input" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
                 log "ERROR" "Invalid target format: $input"
                 return 1
