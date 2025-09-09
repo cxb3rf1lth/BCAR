@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Any
 import logging
 
 # Rich TUI imports
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -105,17 +105,27 @@ class Scanner:
     def validate_target(self, target: str) -> bool:
         """Validate target format (IP or domain)"""
         import re
+        import ipaddress
         
-        # Basic IP validation (0-255 for each octet)
-        ip_pattern = r'^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+        # First try to validate as IP address using ipaddress module for accuracy
+        try:
+            ipaddress.ip_address(target)
+            return True
+        except ipaddress.AddressValueError:
+            pass
         
-        # Enhanced domain validation
+        # Enhanced domain validation - must not start or end with hyphen or dot
         domain_pattern = r'^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
         
-        # Simple domain without dots (like localhost)
+        # Simple domain without dots (like localhost) - no hyphens at start/end
         simple_domain = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
         
-        return bool(re.match(ip_pattern, target) or re.match(domain_pattern, target) or re.match(simple_domain, target))
+        # Additional validation - no consecutive dots, no leading/trailing dots, no empty
+        if not target or '..' in target or target.startswith('.') or target.endswith('.') or target.startswith('-') or target.endswith('-'):
+            return False
+        
+        # Check domain patterns
+        return bool(re.match(domain_pattern, target) or re.match(simple_domain, target))
 
 class DNSScanner(Scanner):
     """DNS enumeration and zone transfer testing"""
@@ -189,7 +199,175 @@ class DNSScanner(Scanner):
         self.results = dns_results
         return dns_results
 
+class WhoisScanner(Scanner):
+    """WHOIS information gathering"""
+    
+    async def run(self) -> Dict[str, Any]:
+        """Perform WHOIS lookup"""
+        self.console.print("[cyan]🔍 Starting WHOIS analysis...[/cyan]")
+        
+        whois_results = {
+            "domain_info": {},
+            "registrar": {},
+            "dates": {},
+            "contacts": {},
+            "nameservers": [],
+            "raw_output": ""
+        }
+        
+        try:
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/whois", exist_ok=True)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.console
+            ) as progress:
+                
+                task = progress.add_task("Performing WHOIS lookup...", total=100)
+                
+                # Run whois command
+                cmd = ["whois", self.config.target]
+                result = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await result.communicate()
+                progress.update(task, advance=50)
+                
+                if result.returncode == 0 and stdout:
+                    whois_output = stdout.decode()
+                    whois_results["raw_output"] = whois_output
+                    
+                    # Save raw output to file
+                    with open(f"{self.config.output_dir}/whois/whois_info.txt", 'w') as f:
+                        f.write(whois_output)
+                    
+                    # Parse WHOIS information (basic parsing)
+                    lines = whois_output.lower().split('\n')
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # Extract key information
+                            if 'registrar' in key and value:
+                                whois_results["registrar"]["name"] = value
+                            elif 'creation' in key or 'created' in key:
+                                whois_results["dates"]["created"] = value
+                            elif 'expir' in key:
+                                whois_results["dates"]["expires"] = value
+                            elif 'updated' in key or 'modified' in key:
+                                whois_results["dates"]["updated"] = value
+                            elif 'name server' in key or 'nserver' in key:
+                                if value not in whois_results["nameservers"]:
+                                    whois_results["nameservers"].append(value)
+                    
+                    progress.update(task, advance=50)
+                    self.console.print(f"[green]✓ WHOIS data retrieved for {self.config.target}[/green]")
+                else:
+                    self.console.print("[yellow]⚠️  WHOIS lookup failed or no data available[/yellow]")
+        
+        except Exception as e:
+            logging.error(f"WHOIS lookup failed: {e}")
+            whois_results["error"] = str(e)
+        
+        self.results = whois_results
+        return whois_results
+
 class PortScanner(Scanner):
+    """WHOIS information gathering"""
+    
+    async def run(self) -> Dict[str, Any]:
+        """Perform WHOIS lookup"""
+        self.console.print("[cyan]🔍 Starting WHOIS analysis...[/cyan]")
+        
+        whois_results = {
+            "domain_info": {},
+            "registrar": {},
+            "dates": {},
+            "contacts": {},
+            "nameservers": [],
+            "raw_output": ""
+        }
+        
+        try:
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/whois", exist_ok=True)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.console
+            ) as progress:
+                
+                task = progress.add_task("Performing WHOIS lookup...", total=100)
+                
+                # Run whois command
+                cmd = ["whois", self.config.target]
+                result = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await result.communicate()
+                progress.update(task, advance=50)
+                
+                if result.returncode == 0 and stdout:
+                    whois_output = stdout.decode()
+                    whois_results["raw_output"] = whois_output
+                    
+                    # Save raw output to file
+                    with open(f"{self.config.output_dir}/whois/whois_info.txt", 'w') as f:
+                        f.write(whois_output)
+                    
+                    # Parse WHOIS information (basic parsing)
+                    lines = whois_output.lower().split('\n')
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # Extract key information
+                            if 'registrar' in key and value:
+                                whois_results["registrar"]["name"] = value
+                            elif 'creation' in key or 'created' in key:
+                                whois_results["dates"]["created"] = value
+                            elif 'expir' in key:
+                                whois_results["dates"]["expires"] = value
+                            elif 'updated' in key or 'modified' in key:
+                                whois_results["dates"]["updated"] = value
+                            elif 'name server' in key or 'nserver' in key:
+                                if value not in whois_results["nameservers"]:
+                                    whois_results["nameservers"].append(value)
+                    
+                    progress.update(task, advance=50)
+                    self.console.print(f"[green]✓ WHOIS data retrieved for {self.config.target}[/green]")
+                else:
+                    self.console.print("[yellow]⚠️  WHOIS lookup failed or no data available[/yellow]")
+        
+        except Exception as e:
+            logging.error(f"WHOIS lookup failed: {e}")
+            whois_results["error"] = str(e)
+        
+        self.results = whois_results
+        return whois_results
+
+
     """Network port scanning with Nmap"""
     
     async def run(self) -> Dict[str, Any]:
@@ -486,7 +664,83 @@ class DOMScanner(Scanner):
         self.results = dom_results
         return dom_results
 
+class VulnerabilityScanner(Scanner):
+    """Enhanced vulnerability scanning and analysis"""
+    
+    async def run(self) -> Dict[str, Any]:
+        """Perform vulnerability scanning"""
+        self.console.print("[cyan]🔍 Starting vulnerability analysis...[/cyan]")
+        
+        vuln_results = {
+            "nmap_vulns": [],
+            "ssl_issues": [],
+            "web_vulns": [],
+            "open_services": [],
+            "security_recommendations": []
+        }
+        
+        try:
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/vulnerabilities", exist_ok=True)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.console
+            ) as progress:
+                
+                task = progress.add_task("Running vulnerability scans...", total=100)
+                
+                # Nmap vulnerability scripts
+                cmd = [
+                    "nmap", "--script", "vuln,safe",
+                    "-sV", self.config.target,
+                    "-oN", f"{self.config.output_dir}/vulnerabilities/nmap_vulns.txt"
+                ]
+                
+                result = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await result.communicate()
+                progress.update(task, advance=60)
+                
+                if result.returncode == 0:
+                    # Parse vulnerability output
+                    vuln_output = stdout.decode()
+                    
+                    # Basic vulnerability parsing
+                    if "VULNERABLE" in vuln_output:
+                        vuln_lines = [line.strip() for line in vuln_output.split('\n') if 'VULNERABLE' in line]
+                        vuln_results["nmap_vulns"] = vuln_lines[:10]  # Limit to first 10
+                        self.console.print(f"[red]⚠️  Found {len(vuln_lines)} potential vulnerabilities[/red]")
+                    else:
+                        self.console.print("[green]✓ No obvious vulnerabilities detected[/green]")
+                
+                progress.update(task, advance=40)
+        
+        except Exception as e:
+            logging.error(f"Vulnerability scanning failed: {e}")
+            vuln_results["error"] = str(e)
+        
+        # Add security recommendations
+        vuln_results["security_recommendations"] = [
+            "Review open services and close unnecessary ones",
+            "Ensure all services are updated to latest versions",
+            "Implement proper firewall rules",
+            "Use strong SSL/TLS configurations",
+            "Regular security updates and patches"
+        ]
+        
+        self.results = vuln_results
+        return vuln_results
+
 class SSLScanner(Scanner):
+
     """SSL/TLS security analysis"""
     
     async def run(self) -> Dict[str, Any]:
@@ -552,9 +806,11 @@ class BCAR:
         self.config = BCARConfig()
         self.scanners = {
             "DNS": DNSScanner,
+            "WHOIS": WhoisScanner,
             "Ports": PortScanner,
             "Web": WebScanner,
             "DOM": DOMScanner,
+            "Vulnerabilities": VulnerabilityScanner,
             "SSL": SSLScanner
         }
         self.scan_results: Dict[str, Any] = {}
@@ -763,10 +1019,10 @@ class BCAR:
         }
         
         # Run scanners
-        selected_scanners = ["DNS", "Ports", "Web"]
+        selected_scanners = ["DNS", "WHOIS", "Ports", "Web"]
         if self.config.dom_scan_enabled:
             selected_scanners.append("DOM")
-        selected_scanners.append("SSL")
+        selected_scanners.extend(["Vulnerabilities", "SSL"])
         
         self.console.print(f"\n[green]🚀 Starting scan against {self.config.target}...[/green]\n")
         
@@ -842,6 +1098,89 @@ class BCAR:
             logging.error(f"Failed to save results: {e}")
             self.console.print(f"[red]✗ Failed to save results: {e}[/red]")
     
+    def _analyze_scan_results(self) -> Dict[str, Any]:
+        """Analyze scan results and provide security insights"""
+        analysis = {
+            "risk_level": "low",
+            "open_ports_count": 0,
+            "web_services_count": 0,
+            "vulnerabilities_found": 0,
+            "security_recommendations": [],
+            "critical_findings": []
+        }
+        
+        try:
+            # Analyze port scan results
+            if "ports" in self.scan_results["results"]:
+                ports_data = self.scan_results["results"]["ports"]
+                open_ports = ports_data.get("open_ports", [])
+                analysis["open_ports_count"] = len(open_ports)
+                
+                # Check for high-risk ports
+                high_risk_ports = [21, 22, 23, 25, 53, 135, 139, 445, 1433, 3389]
+                risky_open = [port for port in open_ports if port in high_risk_ports]
+                
+                if risky_open:
+                    analysis["critical_findings"].append(f"High-risk ports open: {risky_open}")
+                    analysis["security_recommendations"].append("Review and secure high-risk open ports")
+                    analysis["risk_level"] = "high" if len(risky_open) > 3 else "medium"
+            
+            # Analyze web services
+            if "web" in self.scan_results["results"]:
+                web_data = self.scan_results["results"]["web"]
+                web_services = web_data.get("http_services", [])
+                analysis["web_services_count"] = len(web_services)
+                
+                if web_services:
+                    analysis["security_recommendations"].append("Implement web application security measures")
+            
+            # Analyze DNS for zone transfer vulnerabilities
+            if "dns" in self.scan_results["results"]:
+                dns_data = self.scan_results["results"]["dns"]
+                if dns_data.get("zone_transfer", False):
+                    analysis["critical_findings"].append("DNS Zone Transfer possible - High Risk!")
+                    analysis["security_recommendations"].append("Disable DNS zone transfers for unauthorized hosts")
+                    analysis["risk_level"] = "high"
+            
+            # Analyze DOM security findings
+            if "dom" in self.scan_results["results"]:
+                dom_data = self.scan_results["results"]["dom"]
+                xss_count = len(dom_data.get("xss_vulnerabilities", []))
+                redirect_count = len(dom_data.get("open_redirects", []))
+                
+                if xss_count > 0:
+                    analysis["critical_findings"].append(f"XSS vulnerabilities found: {xss_count}")
+                    analysis["security_recommendations"].append("Implement XSS protection and input validation")
+                    analysis["risk_level"] = "high"
+                
+                if redirect_count > 0:
+                    analysis["critical_findings"].append(f"Open redirects found: {redirect_count}")
+                    analysis["security_recommendations"].append("Validate redirect URLs to prevent abuse")
+            
+            # Analyze vulnerability scan results
+            if "vulnerabilities" in self.scan_results["results"]:
+                vuln_data = self.scan_results["results"]["vulnerabilities"]
+                nmap_vulns = vuln_data.get("nmap_vulns", [])
+                analysis["vulnerabilities_found"] = len(nmap_vulns)
+                
+                if nmap_vulns:
+                    analysis["critical_findings"].extend(nmap_vulns[:5])  # Top 5
+                    analysis["security_recommendations"].append("Address identified vulnerabilities immediately")
+                    analysis["risk_level"] = "high"
+            
+            # Add general recommendations
+            if analysis["risk_level"] == "low":
+                analysis["security_recommendations"].extend([
+                    "Maintain regular security updates",
+                    "Implement monitoring and logging",
+                    "Regular security assessments"
+                ])
+        
+        except Exception as e:
+            logging.error(f"Result analysis failed: {e}")
+        
+        return analysis
+    
     def _display_scan_summary(self):
         """Display scan results summary"""
         self.console.clear()
@@ -862,12 +1201,21 @@ class BCAR:
                 # Generate summary based on scanner type
                 if scanner_name == "dns":
                     findings = f"Records: {len(results.get('records', {}))}"
+                    if results.get('zone_transfer', False):
+                        findings += " ⚠️ Zone transfer possible!"
+                elif scanner_name == "whois":
+                    findings = "Domain info retrieved" if results.get('raw_output') else "No data"
                 elif scanner_name == "ports":
                     findings = f"Open ports: {len(results.get('open_ports', []))}"
                 elif scanner_name == "web":
                     findings = f"HTTP services: {len(results.get('http_services', []))}"
                 elif scanner_name == "dom":
-                    findings = f"XSS: {len(results.get('xss_vulnerabilities', []))}"
+                    xss_count = len(results.get('xss_vulnerabilities', []))
+                    redirect_count = len(results.get('open_redirects', []))
+                    findings = f"XSS: {xss_count}, Redirects: {redirect_count}"
+                elif scanner_name == "vulnerabilities":
+                    vuln_count = len(results.get('nmap_vulns', []))
+                    findings = f"Vulnerabilities: {vuln_count}"
                 elif scanner_name == "ssl":
                     findings = f"SSL services: {len(results.get('certificates', {}))}"
                 else:
@@ -876,6 +1224,55 @@ class BCAR:
             results_table.add_row(scanner_name.upper(), status, findings)
         
         self.console.print(results_table)
+        
+        # Security Analysis
+        analysis = self._analyze_scan_results()
+        
+        # Risk Assessment Panel
+        risk_color = {
+            "low": "green",
+            "medium": "yellow", 
+            "high": "red"
+        }
+        
+        risk_panel = Panel(
+            f"[{risk_color[analysis['risk_level']]}]Risk Level: {analysis['risk_level'].upper()}[/{risk_color[analysis['risk_level']]}]\n"
+            f"Open Ports: {analysis['open_ports_count']}\n"
+            f"Web Services: {analysis['web_services_count']}\n"
+            f"Vulnerabilities: {analysis['vulnerabilities_found']}",
+            title="[bold red]Security Assessment[/bold red]",
+            box=box.HEAVY
+        )
+        
+        self.console.print("\n")
+        self.console.print(risk_panel)
+        
+        # Critical Findings
+        if analysis["critical_findings"]:
+            self.console.print("\n[red bold]🚨 Critical Findings:[/red bold]")
+            for finding in analysis["critical_findings"][:5]:  # Show top 5
+                self.console.print(f"  [red]•[/red] {finding}")
+        
+        # Security Recommendations
+        if analysis["security_recommendations"]:
+            self.console.print("\n[yellow bold]💡 Security Recommendations:[/yellow bold]")
+            for i, rec in enumerate(analysis["security_recommendations"][:5], 1):  # Show top 5
+                self.console.print(f"  [yellow]{i}.[/yellow] {rec}")
+        
+        # Scan Performance Metrics
+        if "scan_phases" in self.scan_results:
+            self.console.print("\n[cyan bold]⏱️ Scan Performance:[/cyan bold]")
+            perf_table = Table(box=box.SIMPLE)
+            perf_table.add_column("Phase", style="cyan")
+            perf_table.add_column("Duration", style="white")
+            perf_table.add_column("Status", style="white")
+            
+            for phase, data in self.scan_results["scan_phases"].items():
+                duration = f"{data.get('duration_seconds', 0):.1f}s"
+                status = "[green]✓[/green]" if data.get('status') == 'completed' else "[red]✗[/red]"
+                perf_table.add_row(phase, duration, status)
+            
+            self.console.print(perf_table)
         
         # Output location
         self.console.print(f"\n[cyan]📁 Results saved to:[/cyan] [yellow]{self.config.output_dir}[/yellow]")
@@ -1082,8 +1479,81 @@ DOM security analysis, and SSL/TLS assessment."""
             self.console.print(f"\n[red]Unexpected error: {e}[/red]")
             logging.error(f"Unexpected error in main loop: {e}")
 
+async def install_missing_dependencies(missing_tools: List[str]) -> bool:
+    """Attempt to install missing dependencies automatically"""
+    console = Console()
+    
+    if not missing_tools:
+        return True
+        
+    console.print(f"[yellow]🔧 Attempting to install missing tools: {', '.join(missing_tools)}[/yellow]")
+    
+    # Detect package manager and create appropriate install commands
+    package_managers = [
+        ("/usr/bin/apt", "apt", ["sudo", "apt", "update", "&&", "sudo", "apt", "install", "-y"]),
+        ("/usr/bin/yum", "yum", ["sudo", "yum", "install", "-y"]),
+        ("/usr/bin/dnf", "dnf", ["sudo", "dnf", "install", "-y"]),
+        ("/usr/bin/pacman", "pacman", ["sudo", "pacman", "-S", "--noconfirm"]),
+        ("/opt/homebrew/bin/brew", "brew", ["brew", "install"]),
+        ("/usr/local/bin/brew", "brew", ["brew", "install"])
+    ]
+    
+    package_mapping = {
+        "dig": {"apt": "dnsutils", "yum": "bind-utils", "dnf": "bind-utils", "pacman": "dnsutils", "brew": "bind"},
+        "nmap": {"all": "nmap"},
+        "whois": {"all": "whois"},
+        "gobuster": {"all": "gobuster"},
+        "nikto": {"all": "nikto"},
+        "whatweb": {"all": "whatweb"},
+        "curl": {"all": "curl"}
+    }
+    
+    for pm_path, pm_name, base_cmd in package_managers:
+        if os.path.exists(pm_path):
+            console.print(f"[cyan]📦 Found {pm_name} package manager[/cyan]")
+            
+            success_count = 0
+            for tool in missing_tools:
+                try:
+                    # Get package name for this tool and package manager
+                    pkg_name = package_mapping.get(tool, {}).get(pm_name) or package_mapping.get(tool, {}).get("all") or tool
+                    
+                    if pm_name == "apt" and tool == "dig":
+                        # Special case: update first for apt
+                        await asyncio.create_subprocess_exec("sudo", "apt", "update", "-qq")
+                    
+                    # Build install command
+                    cmd = base_cmd + [pkg_name]
+                    
+                    console.print(f"[dim]Installing {pkg_name}...[/dim]")
+                    result = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    
+                    await result.communicate()
+                    
+                    if result.returncode == 0:
+                        console.print(f"[green]✓ Installed {pkg_name}[/green]")
+                        success_count += 1
+                    else:
+                        console.print(f"[yellow]⚠️  Failed to install {pkg_name}[/yellow]")
+                        
+                except Exception as e:
+                    console.print(f"[red]✗ Error installing {tool}: {e}[/red]")
+            
+            return success_count > 0
+    
+    console.print("[red]❌ No supported package manager found[/red]")
+    console.print("[yellow]Please install missing tools manually:[/yellow]")
+    for tool in missing_tools:
+        console.print(f"   - {tool}")
+    
+    return False
+
 async def check_dependencies():
-    """Check for required dependencies"""
+    """Check for required dependencies with auto-installation option"""
     console = Console()
     
     required_tools = ["nmap", "dig", "whois"]
@@ -1118,14 +1588,38 @@ async def check_dependencies():
     
     if missing_required:
         console.print(f"[red]✗ Missing required tools: {', '.join(missing_required)}[/red]")
-        console.print("[yellow]Please install missing tools before running BCAR[/yellow]")
-        return False
+        
+        # Attempt automatic installation
+        if await install_missing_dependencies(missing_required):
+            # Re-check after installation
+            still_missing = []
+            for tool in missing_required:
+                result = await asyncio.create_subprocess_exec(
+                    "which", tool,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await result.communicate()
+                if result.returncode != 0:
+                    still_missing.append(tool)
+            
+            if still_missing:
+                console.print(f"[red]❌ Still missing after installation: {', '.join(still_missing)}[/red]")
+                return False
+            else:
+                console.print("[green]✓ All required dependencies installed successfully[/green]")
+        else:
+            console.print("[yellow]⚠️  Automatic installation failed. Please install manually.[/yellow]")
+            return False
     
     if missing_optional:
         console.print(f"[yellow]⚠️  Missing optional tools: {', '.join(missing_optional)}[/yellow]")
         console.print("[dim]Some features may be limited[/dim]")
+        
+        # Try to install optional tools but don't fail if it doesn't work
+        await install_missing_dependencies(missing_optional)
     
-    console.print("[green]✓ Dependencies check passed[/green]")
+    console.print("[green]✓ Dependencies check completed[/green]")
     return True
 
 async def main():
