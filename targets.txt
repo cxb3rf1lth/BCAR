@@ -1,0 +1,8 @@
+# BCAR Targets File
+# One target per line (IP addresses or domain names)
+# Lines starting with # are comments and will be ignored
+
+example.com
+testphp.vulnweb.com
+scanme.nmap.org
+httpbin.org

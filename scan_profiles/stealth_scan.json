@@ -1,0 +1,32 @@
+{
+    "name": "Stealth Scan",
+    "description": "Slow, evasive scanning to avoid detection",
+    "config": {
+        "threads": 5,
+        "timing": "slow",
+        "stealth_mode": true,
+        "scanners": {
+            "dns": true,
+            "whois": true,
+            "ports": {
+                "enabled": true,
+                "type": "stealth",
+                "ports": "80,443,22,21,25,53,110,995,993,143",
+                "options": ["-sS", "-T1", "--max-retries", "1"]
+            },
+            "web": {
+                "enabled": true,
+                "wordlist_size": "medium",
+                "delay": 2
+            },
+            "dom": false,
+            "vulnerabilities": {
+                "enabled": true,
+                "safe_only": true
+            },
+            "ssl": true
+        }
+    },
+    "estimated_time": "60-120 minutes",
+    "risk_level": "low"
+}
