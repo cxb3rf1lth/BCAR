@@ -770,15 +770,18 @@ set_target_interactive() {
         else
             echo -e "${RED}✗ Invalid target format${NC}"
             echo -en "${YELLOW}Press Enter to continue...${NC}"
-            read -r
+            read -r _
             return 1
         fi
     else
         echo -e "${YELLOW}No target entered${NC}"
     fi
     
-    echo -en "${YELLOW}Press Enter to continue...${NC}"
-    read -r
+    # Only pause for user input if we're truly interactive (not automated)
+    if [[ -t 0 ]]; then
+        echo -en "${YELLOW}Press Enter to continue...${NC}"
+        read -r _
+    fi
 }
 
 # Interactive options configuration
@@ -1025,8 +1028,10 @@ start_scan_interactive() {
     echo
     echo -e "${GREEN}✓ Scan completed!${NC}"
     echo -e "${CYAN}Results saved to: $OUTPUT_DIR${NC}"
-    echo -en "${YELLOW}Press Enter to return to main menu...${NC}"
-    read -r
+    if [[ -t 0 ]]; then
+        echo -en "${YELLOW}Press Enter to return to main menu...${NC}"
+        read -r _
+    fi
 }
 
 # Interactive main menu loop
