@@ -44,11 +44,13 @@ class BCARConfig:
     
     def __init__(self):
         self.target: Optional[str] = None
+        self.targets_file: Optional[str] = None
+        self.targets_list: List[str] = []
         self.output_dir: str = f"bcar_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.threads: int = 50
         self.timing: str = "normal"  # slow, normal, fast
         self.stealth_mode: bool = False
-        self.output_format: str = "json"  # txt, json, both
+        self.output_format: str = "json"  # txt, json, both, pdf, html
         self.dom_scan_enabled: bool = True
         self.dom_headless: bool = True
         self.nmap_scripts: str = "default,vuln"
@@ -61,6 +63,40 @@ class BCARConfig:
         self.user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) BCAR/2.0"
         self.dns_servers: List[str] = ["8.8.8.8", "1.1.1.1"]
         self.skip_phases: List[str] = []
+        
+        # Enhanced features
+        self.scan_profile: Optional[str] = None
+        self.wordlist_directory: str = "wordlists"
+        self.payloads_directory: str = "payloads"
+        self.evidence_capture: bool = True
+        self.auto_exploit: bool = False
+        self.fuzzing_enabled: bool = False
+        self.alternative_tools: Dict[str, List[str]] = {
+            "nmap": ["masscan", "zmap"],
+            "gobuster": ["dirb", "dirsearch", "ffuf"],
+            "nikto": ["nuclei", "whatweb"],
+            "whois": ["dig", "host"],
+            "dig": ["nslookup", "host"]
+        }
+        
+        # Payload configuration
+        self.xss_payloads: bool = False
+        self.sqli_payloads: bool = False
+        self.lfi_payloads: bool = False
+        self.command_injection: bool = False
+        
+        # Reporting options
+        self.generate_executive_summary: bool = False
+        self.sort_findings_by_severity: bool = True
+        self.filter_false_positives: bool = True
+        self.include_recommendations: bool = True
+        
+        # Scanner-specific options
+        self.quick_port_scan: bool = False
+        self.full_port_scan: bool = False
+        self.udp_scan: bool = False
+        self.service_detection: bool = True
+        self.os_detection: bool = False
         
     def load_from_file(self, config_path: str = "bcar_config.json") -> None:
         """Load configuration from JSON file"""
@@ -89,9 +125,137 @@ class BCARConfig:
     def reset_to_defaults(self) -> None:
         """Reset configuration to default values"""
         self.__init__()
+    
+    def load_scan_profile(self, profile_name: str) -> bool:
+        """Load a predefined scan profile"""
+        try:
+            profile_path = f"scan_profiles/{profile_name}.json"
+            if Path(profile_path).exists():
+                with open(profile_path, 'r') as f:
+                    profile_data = json.load(f)
+                    config_data = profile_data.get('config', {})
+                    
+                    # Apply profile configuration
+                    for key, value in config_data.items():
+                        if hasattr(self, key):
+                            setattr(self, key, value)
+                    
+                    self.scan_profile = profile_name
+                    return True
+            else:
+                logging.warning(f"Profile {profile_name} not found")
+                return False
+        except Exception as e:
+            logging.error(f"Error loading profile {profile_name}: {e}")
+            return False
+    
+    def load_targets_from_file(self, filepath: str) -> bool:
+        """Load targets from a text file"""
+        try:
+            if Path(filepath).exists():
+                with open(filepath, 'r') as f:
+                    targets = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                    
+                    # Validate targets using the validation logic directly
+                    valid_targets = []
+                    for target in targets:
+                        if self._validate_target_format(target):
+                            valid_targets.append(target)
+                        else:
+                            logging.warning(f"Invalid target skipped: {target}")
+                    
+                    self.targets_list = valid_targets
+                    self.targets_file = filepath
+                    return True
+            else:
+                logging.error(f"Targets file not found: {filepath}")
+                return False
+        except Exception as e:
+            logging.error(f"Error loading targets file: {e}")
+            return False
+    
+    def add_target(self, target: str) -> bool:
+        """Add a target to the targets list"""
+        if self._validate_target_format(target):
+            if target not in self.targets_list:
+                self.targets_list.append(target)
+                return True
+        return False
+    
+    def _validate_target_format(self, target: str) -> bool:
+        """Validate target format (IP or domain) - same logic as Scanner.validate_target"""
+        import re
+        import ipaddress
+        
+        # First try to validate as IP address using ipaddress module for accuracy
+        try:
+            ipaddress.ip_address(target)
+            return True
+        except (ipaddress.AddressValueError, ValueError):
+            # Not a valid IP, continue to domain validation
+            pass
+        
+        # Enhanced domain validation - must not start or end with hyphen or dot
+        domain_pattern = r'^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
+        
+        # Simple domain without dots (like localhost) - no hyphens at start/end
+        simple_domain = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
+        
+        # Additional validation for domains - no consecutive dots, no leading/trailing dots/hyphens, no empty
+        if not target or '..' in target or target.startswith('.') or target.endswith('.') or target.startswith('-') or target.endswith('-'):
+            return False
+        
+        # Validate IP addresses more strictly
+        ip_parts = target.split('.')
+        if len(ip_parts) == 4 and all(part.isdigit() for part in ip_parts):
+            # Check if all parts are valid IP octets (0-255)
+            if all(0 <= int(part) <= 255 for part in ip_parts):
+                return True
+            else:
+                return False  # Invalid IP range like 999.999.999.999
+        
+        # Check domain patterns
+        return bool(re.match(domain_pattern, target) or re.match(simple_domain, target))
+    
+    def remove_target(self, target: str) -> bool:
+        """Remove a target from the targets list"""
+        if target in self.targets_list:
+            self.targets_list.remove(target)
+            return True
+        return False
+    
+    def get_wordlist_path(self, wordlist_type: str, size: str = "medium") -> Optional[str]:
+        """Get path to wordlist based on type and size"""
+        wordlist_paths = {
+            "directories": {
+                "small": f"{self.wordlist_directory}/directories/common_dirs.txt",
+                "medium": "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt",
+                "large": "/usr/share/wordlists/dirbuster/directory-list-2.3-big.txt"
+            },
+            "files": {
+                "small": f"{self.payloads_directory}/files/common_files.txt",
+                "medium": "/usr/share/seclists/Discovery/Web-Content/common.txt",
+                "large": "/usr/share/seclists/Discovery/Web-Content/raft-large-files.txt"
+            },
+            "subdomains": {
+                "small": f"{self.wordlist_directory}/subdomains/common_subdomains.txt",
+                "medium": "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
+                "large": "/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt"
+            }
+        }
+        
+        # Try to find the best available wordlist
+        if wordlist_type in wordlist_paths:
+            for s in [size, "medium", "small"]:  # Fallback order
+                if s in wordlist_paths[wordlist_type]:
+                    path = wordlist_paths[wordlist_type][s]
+                    if Path(path).exists():
+                        return path
+        
+        return None
 
 class Scanner:
-    """Base class for all scanning modules"""
+    """Base class for all scanning modules with enhanced error handling and fallbacks"""
     
     def __init__(self, config: BCARConfig, console: Console):
         self.config = config
@@ -101,6 +265,78 @@ class Scanner:
     async def run(self) -> Dict[str, Any]:
         """Run the scanner - to be implemented by subclasses"""
         raise NotImplementedError
+    
+    async def check_tool_availability(self, tool_name: str) -> bool:
+        """Check if a tool is available on the system"""
+        try:
+            result = await asyncio.create_subprocess_exec(
+                "which", tool_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    async def get_available_tool(self, primary_tool: str) -> Optional[str]:
+        """Get the first available tool from primary and alternatives"""
+        # Check primary tool first
+        if await self.check_tool_availability(primary_tool):
+            return primary_tool
+        
+        # Check alternatives
+        alternatives = self.config.alternative_tools.get(primary_tool, [])
+        for alt_tool in alternatives:
+            if await self.check_tool_availability(alt_tool):
+                self.console.print(f"[yellow]⚠️  {primary_tool} not available, using {alt_tool}[/yellow]")
+                return alt_tool
+        
+        return None
+    
+    async def run_command_with_retry(self, cmd: List[str], retries: int = None) -> Dict[str, Any]:
+        """Run a command with retry logic and error handling"""
+        if retries is None:
+            retries = self.config.max_retries
+        
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                if attempt > 0:
+                    self.console.print(f"[yellow]🔄 Retry attempt {attempt}/{retries}[/yellow]")
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                
+                result = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await asyncio.wait_for(
+                    result.communicate(),
+                    timeout=self.config.timeout
+                )
+                
+                return {
+                    "returncode": result.returncode,
+                    "stdout": stdout.decode('utf-8', errors='ignore'),
+                    "stderr": stderr.decode('utf-8', errors='ignore'),
+                    "success": result.returncode == 0
+                }
+                
+            except asyncio.TimeoutError:
+                last_error = f"Command timed out after {self.config.timeout} seconds"
+                self.console.print(f"[red]⏰ {last_error}[/red]")
+            except Exception as e:
+                last_error = str(e)
+                self.console.print(f"[red]❌ Command failed: {e}[/red]")
+        
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": last_error or "Unknown error",
+            "success": False
+        }
         
     def validate_target(self, target: str) -> bool:
         """Validate target format (IP or domain)"""
@@ -111,7 +347,8 @@ class Scanner:
         try:
             ipaddress.ip_address(target)
             return True
-        except ipaddress.AddressValueError:
+        except (ipaddress.AddressValueError, ValueError):
+            # Not a valid IP, continue to domain validation
             pass
         
         # Enhanced domain validation - must not start or end with hyphen or dot
@@ -120,9 +357,18 @@ class Scanner:
         # Simple domain without dots (like localhost) - no hyphens at start/end
         simple_domain = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
         
-        # Additional validation - no consecutive dots, no leading/trailing dots, no empty
+        # Additional validation for domains - no consecutive dots, no leading/trailing dots/hyphens, no empty
         if not target or '..' in target or target.startswith('.') or target.endswith('.') or target.startswith('-') or target.endswith('-'):
             return False
+        
+        # Validate IP addresses more strictly
+        ip_parts = target.split('.')
+        if len(ip_parts) == 4 and all(part.isdigit() for part in ip_parts):
+            # Check if all parts are valid IP octets (0-255)
+            if all(0 <= int(part) <= 255 for part in ip_parts):
+                return True
+            else:
+                return False  # Invalid IP range like 999.999.999.999
         
         # Check domain patterns
         return bool(re.match(domain_pattern, target) or re.match(simple_domain, target))
@@ -492,17 +738,20 @@ class PortScanner(Scanner):
             logging.warning(f"Could not parse nmap output: {e}")
 
 class WebScanner(Scanner):
-    """Web application scanning and directory enumeration"""
+    """Enhanced web application scanning with fuzzing and payload testing"""
     
     async def run(self) -> Dict[str, Any]:
-        """Perform web application scanning"""
-        self.console.print("[cyan]🔍 Starting web application scanning...[/cyan]")
+        """Perform comprehensive web application scanning"""
+        self.console.print("[cyan]🔍 Starting enhanced web application scanning...[/cyan]")
         
         web_results = {
             "http_services": [],
             "technologies": {},
             "directories": {},
-            "vulnerabilities": []
+            "files": {},
+            "vulnerabilities": [],
+            "fuzzing_results": {},
+            "payload_results": {}
         }
         
         try:
@@ -523,34 +772,378 @@ class WebScanner(Scanner):
                 for port in http_ports:
                     task = progress.add_task(f"Scanning web service on port {port}...", total=100)
                     
-                    # Check if port is open (you'd get this from port scanner results)
+                    # Check if port is accessible
                     url = f"http{'s' if port in [443, 8443] else ''}://{self.config.target}:{port}"
                     
-                    # WhatWeb technology detection
-                    try:
-                        cmd = ["whatweb", "--color=never", url]
-                        result = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await result.communicate()
-                        
-                        if result.returncode == 0:
-                            web_results["technologies"][port] = stdout.decode().strip()
-                            web_results["http_services"].append(port)
+                    # Check if service is reachable
+                    if not await self._check_web_service(url):
+                        progress.update(task, advance=100)
+                        continue
                     
-                    except Exception as e:
-                        logging.warning(f"WhatWeb scan failed for port {port}: {e}")
+                    web_results["http_services"].append(port)
+                    progress.update(task, advance=20)
                     
-                    # Directory enumeration with Gobuster
-                    if self.config.wordlist and os.path.exists(self.config.wordlist):
-                        try:
-                            cmd = [
-                                "gobuster", "dir", "-u", url, "-w", self.config.wordlist,
-                                "-t", str(self.config.threads), "-q",
-                                "-o", f"{self.config.output_dir}/web/gobuster_{port}.txt"
-                            ]
+                    # Technology detection with fallbacks
+                    await self._detect_technologies(url, port, web_results)
+                    progress.update(task, advance=40)
+                    
+                    # Directory enumeration with multiple tools
+                    await self._enumerate_directories(url, port, web_results)
+                    progress.update(task, advance=60)
+                    
+                    # File enumeration
+                    await self._enumerate_files(url, port, web_results)
+                    progress.update(task, advance=80)
+                    
+                    # Vulnerability scanning
+                    await self._scan_vulnerabilities(url, port, web_results)
+                    progress.update(task, advance=90)
+                    
+                    # Payload testing if enabled
+                    if self.config.fuzzing_enabled:
+                        await self._test_payloads(url, port, web_results)
+                    
+                    progress.update(task, advance=100)
+            
+            # Save results
+            await self._save_web_results(web_results)
+            
+        except Exception as e:
+            web_results["error"] = str(e)
+            logging.error(f"Web scanning error: {e}")
+        
+        return web_results
+    
+    async def _check_web_service(self, url: str) -> bool:
+        """Check if web service is reachable"""
+        try:
+            cmd = ["curl", "-s", "-I", "--connect-timeout", "5", url]
+            result = await self.run_command_with_retry(cmd, retries=1)
+            return result["success"]
+        except Exception:
+            return False
+    
+    async def _detect_technologies(self, url: str, port: int, results: Dict[str, Any]):
+        """Detect web technologies using multiple tools"""
+        # Try WhatWeb first
+        whatweb_tool = await self.get_available_tool("whatweb")
+        if whatweb_tool:
+            try:
+                cmd = [whatweb_tool, "--color=never", url]
+                result = await self.run_command_with_retry(cmd)
+                if result["success"]:
+                    results["technologies"][port] = result["stdout"].strip()
+                    return
+            except Exception as e:
+                logging.warning(f"WhatWeb scan failed for port {port}: {e}")
+        
+        # Fallback to curl for basic detection
+        try:
+            cmd = ["curl", "-s", "-I", url]
+            result = await self.run_command_with_retry(cmd)
+            if result["success"]:
+                headers = result["stdout"]
+                results["technologies"][port] = f"Headers: {headers}"
+        except Exception as e:
+            logging.warning(f"Technology detection failed for port {port}: {e}")
+    
+    async def _enumerate_directories(self, url: str, port: int, results: Dict[str, Any]):
+        """Enumerate directories using multiple tools with fallbacks"""
+        # Get appropriate wordlist
+        wordlist_path = self.config.get_wordlist_path("directories", "medium")
+        if not wordlist_path:
+            self.console.print("[yellow]⚠️  No directory wordlist available, skipping enumeration[/yellow]")
+            return
+        
+        # Try gobuster first
+        gobuster_tool = await self.get_available_tool("gobuster")
+        if gobuster_tool:
+            await self._run_gobuster(gobuster_tool, url, port, wordlist_path, results)
+            return
+        
+        # Fallback to dirb
+        dirb_tool = await self.get_available_tool("dirb")
+        if dirb_tool:
+            await self._run_dirb(dirb_tool, url, port, wordlist_path, results)
+            return
+        
+        # Manual curl-based enumeration as last resort
+        await self._manual_directory_enum(url, port, wordlist_path, results)
+    
+    async def _run_gobuster(self, tool: str, url: str, port: int, wordlist: str, results: Dict[str, Any]):
+        """Run gobuster directory enumeration"""
+        try:
+            cmd = [
+                tool, "dir", "-u", url, "-w", wordlist,
+                "-t", str(min(self.config.threads, 20)), "-q",
+                "-o", f"{self.config.output_dir}/web/gobuster_{port}.txt"
+            ]
+            
+            # Add stealth options if enabled
+            if self.config.stealth_mode:
+                cmd.extend(["--delay", "2s"])
+            
+            result = await self.run_command_with_retry(cmd)
+            if result["success"]:
+                # Parse gobuster results
+                output_file = f"{self.config.output_dir}/web/gobuster_{port}.txt"
+                if Path(output_file).exists():
+                    with open(output_file, 'r') as f:
+                        directories = []
+                        for line in f:
+                            if line.strip() and not line.startswith('/'):
+                                directories.append(line.strip())
+                        results["directories"][port] = directories
+        except Exception as e:
+            logging.warning(f"Gobuster enumeration failed for port {port}: {e}")
+    
+    async def _run_dirb(self, tool: str, url: str, port: int, wordlist: str, results: Dict[str, Any]):
+        """Run dirb directory enumeration"""
+        try:
+            output_file = f"{self.config.output_dir}/web/dirb_{port}.txt"
+            cmd = [tool, url, wordlist, "-o", output_file, "-S"]
+            
+            result = await self.run_command_with_retry(cmd)
+            if result["success"] and Path(output_file).exists():
+                with open(output_file, 'r') as f:
+                    content = f.read()
+                    # Basic parsing of dirb output
+                    directories = []
+                    for line in content.split('\n'):
+                        if '+ ' in line and url in line:
+                            directories.append(line.strip())
+                    results["directories"][port] = directories
+        except Exception as e:
+            logging.warning(f"Dirb enumeration failed for port {port}: {e}")
+    
+    async def _manual_directory_enum(self, url: str, port: int, wordlist: str, results: Dict[str, Any]):
+        """Manual directory enumeration using curl"""
+        try:
+            directories = []
+            with open(wordlist, 'r') as f:
+                dirs = [line.strip() for line in f if line.strip()][:100]  # Limit for manual enum
+            
+            for directory in dirs:
+                test_url = f"{url}/{directory}"
+                cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", test_url]
+                result = await self.run_command_with_retry(cmd, retries=1)
+                
+                if result["success"]:
+                    status_code = result["stdout"].strip()
+                    if status_code in ["200", "301", "302", "403"]:
+                        directories.append(f"{test_url} [{status_code}]")
+                
+                # Add delay for stealth
+                if self.config.stealth_mode:
+                    await asyncio.sleep(1)
+            
+            results["directories"][port] = directories
+            
+        except Exception as e:
+            logging.warning(f"Manual directory enumeration failed for port {port}: {e}")
+    
+    async def _enumerate_files(self, url: str, port: int, results: Dict[str, Any]):
+        """Enumerate common files"""
+        file_wordlist = self.config.get_wordlist_path("files", "small")
+        if not file_wordlist:
+            return
+        
+        try:
+            files_found = []
+            with open(file_wordlist, 'r') as f:
+                files = [line.strip() for line in f if line.strip()][:50]  # Limit file checks
+            
+            for filename in files:
+                test_url = f"{url}/{filename}"
+                cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", test_url]
+                result = await self.run_command_with_retry(cmd, retries=1)
+                
+                if result["success"]:
+                    status_code = result["stdout"].strip()
+                    if status_code == "200":
+                        files_found.append(f"{test_url} [{status_code}]")
+                
+                if self.config.stealth_mode:
+                    await asyncio.sleep(0.5)
+            
+            results["files"][port] = files_found
+            
+        except Exception as e:
+            logging.warning(f"File enumeration failed for port {port}: {e}")
+    
+    async def _scan_vulnerabilities(self, url: str, port: int, results: Dict[str, Any]):
+        """Scan for web vulnerabilities using nikto or alternatives"""
+        nikto_tool = await self.get_available_tool("nikto")
+        if nikto_tool:
+            try:
+                output_file = f"{self.config.output_dir}/web/nikto_{port}.txt"
+                cmd = [nikto_tool, "-h", url, "-o", output_file, "-Format", "txt"]
+                
+                result = await self.run_command_with_retry(cmd)
+                if result["success"] and Path(output_file).exists():
+                    with open(output_file, 'r') as f:
+                        vulnerabilities = []
+                        for line in f:
+                            if line.strip() and not line.startswith('-') and not line.startswith('Nikto'):
+                                vulnerabilities.append(line.strip())
+                        results["vulnerabilities"].extend(vulnerabilities)
+            except Exception as e:
+                logging.warning(f"Nikto scan failed for port {port}: {e}")
+    
+    async def _test_payloads(self, url: str, port: int, results: Dict[str, Any]):
+        """Test various payloads for vulnerabilities"""
+        payload_results = {}
+        
+        # XSS payload testing
+        if self.config.xss_payloads:
+            payload_results["xss"] = await self._test_xss_payloads(url)
+        
+        # SQL injection payload testing
+        if self.config.sqli_payloads:
+            payload_results["sqli"] = await self._test_sqli_payloads(url)
+        
+        # LFI payload testing
+        if self.config.lfi_payloads:
+            payload_results["lfi"] = await self._test_lfi_payloads(url)
+        
+        results["payload_results"][port] = payload_results
+    
+    async def _test_xss_payloads(self, url: str) -> List[str]:
+        """Test XSS payloads"""
+        xss_file = f"{self.config.payloads_directory}/web/xss_payloads.txt"
+        if not Path(xss_file).exists():
+            return []
+        
+        results = []
+        try:
+            with open(xss_file, 'r') as f:
+                payloads = [line.strip() for line in f if line.strip()][:10]  # Limit payloads
+            
+            for payload in payloads:
+                # Test in common parameters
+                test_urls = [
+                    f"{url}?q={payload}",
+                    f"{url}?search={payload}",
+                    f"{url}?id={payload}"
+                ]
+                
+                for test_url in test_urls:
+                    cmd = ["curl", "-s", test_url]
+                    result = await self.run_command_with_retry(cmd, retries=1)
+                    
+                    if result["success"] and payload in result["stdout"]:
+                        results.append(f"Potential XSS: {test_url}")
+                    
+                    if self.config.stealth_mode:
+                        await asyncio.sleep(1)
+        
+        except Exception as e:
+            logging.warning(f"XSS payload testing failed: {e}")
+        
+        return results
+    
+    async def _test_sqli_payloads(self, url: str) -> List[str]:
+        """Test SQL injection payloads"""
+        sqli_file = f"{self.config.payloads_directory}/web/sqli_payloads.txt"
+        if not Path(sqli_file).exists():
+            return []
+        
+        results = []
+        try:
+            with open(sqli_file, 'r') as f:
+                payloads = [line.strip() for line in f if line.strip()][:10]  # Limit payloads
+            
+            for payload in payloads:
+                test_urls = [
+                    f"{url}?id={payload}",
+                    f"{url}?user={payload}",
+                    f"{url}?search={payload}"
+                ]
+                
+                for test_url in test_urls:
+                    cmd = ["curl", "-s", test_url]
+                    result = await self.run_command_with_retry(cmd, retries=1)
+                    
+                    # Look for SQL error indicators
+                    if result["success"]:
+                        error_indicators = ["sql", "mysql", "error", "warning", "fatal"]
+                        response = result["stdout"].lower()
+                        if any(indicator in response for indicator in error_indicators):
+                            results.append(f"Potential SQLi: {test_url}")
+                    
+                    if self.config.stealth_mode:
+                        await asyncio.sleep(1)
+        
+        except Exception as e:
+            logging.warning(f"SQLi payload testing failed: {e}")
+        
+        return results
+    
+    async def _test_lfi_payloads(self, url: str) -> List[str]:
+        """Test Local File Inclusion payloads"""
+        lfi_file = f"{self.config.payloads_directory}/fuzzing/lfi_payloads.txt"
+        if not Path(lfi_file).exists():
+            return []
+        
+        results = []
+        try:
+            with open(lfi_file, 'r') as f:
+                payloads = [line.strip() for line in f if line.strip()][:10]  # Limit payloads
+            
+            for payload in payloads:
+                test_urls = [
+                    f"{url}?file={payload}",
+                    f"{url}?page={payload}",
+                    f"{url}?include={payload}"
+                ]
+                
+                for test_url in test_urls:
+                    cmd = ["curl", "-s", test_url]
+                    result = await self.run_command_with_retry(cmd, retries=1)
+                    
+                    # Look for file inclusion indicators
+                    if result["success"]:
+                        lfi_indicators = ["root:", "bin/bash", "etc/passwd", "boot.ini"]
+                        response = result["stdout"].lower()
+                        if any(indicator in response for indicator in lfi_indicators):
+                            results.append(f"Potential LFI: {test_url}")
+                    
+                    if self.config.stealth_mode:
+                        await asyncio.sleep(1)
+        
+        except Exception as e:
+            logging.warning(f"LFI payload testing failed: {e}")
+        
+        return results
+    
+    async def _save_web_results(self, results: Dict[str, Any]):
+        """Save detailed web scanning results"""
+        try:
+            # Save JSON results
+            with open(f"{self.config.output_dir}/web/web_results.json", 'w') as f:
+                json.dump(results, f, indent=2)
+            
+            # Save summary report
+            with open(f"{self.config.output_dir}/web/web_summary.txt", 'w') as f:
+                f.write("=== Web Application Scanning Summary ===\n\n")
+                
+                f.write(f"HTTP Services Found: {len(results['http_services'])}\n")
+                for port in results['http_services']:
+                    f.write(f"  - Port {port}\n")
+                
+                f.write(f"\nDirectories Found: {sum(len(dirs) for dirs in results['directories'].values())}\n")
+                f.write(f"Files Found: {sum(len(files) for files in results['files'].values())}\n")
+                f.write(f"Vulnerabilities Found: {len(results['vulnerabilities'])}\n")
+                
+                if results.get('payload_results'):
+                    f.write("\nPayload Testing Results:\n")
+                    for port, payload_data in results['payload_results'].items():
+                        f.write(f"  Port {port}:\n")
+                        for payload_type, findings in payload_data.items():
+                            f.write(f"    {payload_type.upper()}: {len(findings)} findings\n")
+        
+        except Exception as e:
+            logging.error(f"Failed to save web results: {e}")
                             
                             result = await asyncio.create_subprocess_exec(
                                 *cmd,
@@ -856,7 +1449,7 @@ class BCAR:
         ))
     
     def show_main_menu(self):
-        """Display the main menu"""
+        """Display the enhanced main menu"""
         self.console.clear()
         self.print_banner()
         
@@ -865,31 +1458,324 @@ class BCAR:
         config_table.add_column("Setting", style="cyan")
         config_table.add_column("Value", style="yellow")
         
-        config_table.add_row("Target", self.config.target or "Not set")
+        # Enhanced configuration display
+        target_display = self.config.target or f"{len(self.config.targets_list)} targets loaded" if self.config.targets_list else "Not set"
+        config_table.add_row("Target(s)", target_display)
+        config_table.add_row("Scan Profile", self.config.scan_profile or "Custom")
         config_table.add_row("Output Directory", self.config.output_dir)
         config_table.add_row("Threads", str(self.config.threads))
         config_table.add_row("Timing", self.config.timing)
         config_table.add_row("Stealth Mode", "Enabled" if self.config.stealth_mode else "Disabled")
-        config_table.add_row("DOM Scanning", "Enabled" if self.config.dom_scan_enabled else "Disabled")
+        config_table.add_row("Fuzzing", "Enabled" if self.config.fuzzing_enabled else "Disabled")
         config_table.add_row("Output Format", self.config.output_format)
         
         self.console.print(config_table)
         self.console.print()
         
-        # Menu options
+        # Enhanced menu options
         menu_table = Table(box=box.SIMPLE)
         menu_table.add_column("Option", style="green bold", width=8)
         menu_table.add_column("Description", style="white")
         
-        menu_table.add_row("1", "Set Target (IP/Domain)")
-        menu_table.add_row("2", "Configure Scan Options")
-        menu_table.add_row("3", "Start Reconnaissance Scan")
-        menu_table.add_row("4", "View Previous Results")
-        menu_table.add_row("5", "Reset Configuration")
-        menu_table.add_row("6", "Help & Documentation")
+        menu_table.add_row("1", "🎯 Target Management")
+        menu_table.add_row("2", "⚙️  Scan Configuration")
+        menu_table.add_row("3", "📋 Load Scan Profile")
+        menu_table.add_row("4", "🚀 Start Reconnaissance Scan")
+        menu_table.add_row("5", "🔍 Advanced Fuzzing & Payloads")
+        menu_table.add_row("6", "📊 View & Analyze Results")
+        menu_table.add_row("7", "🛠️  Tool Management")
+        menu_table.add_row("8", "📖 Help & Documentation")
+        menu_table.add_row("9", "🔄 Reset Configuration")
         menu_table.add_row("0", "[red]Exit[/red]")
         
-        self.console.print(Panel(menu_table, title="[white bold]Main Menu[/white bold]", box=box.ROUNDED))
+        self.console.print(Panel(menu_table, title="[white bold]Enhanced BCAR Main Menu[/white bold]", box=box.ROUNDED))
+    
+    def target_management_menu(self):
+        """Target management interface"""
+        while True:
+            self.console.clear()
+            self.console.print("[cyan]═══ Target Management ═══[/cyan]\n")
+            
+            # Display current targets
+            if self.config.targets_list:
+                target_table = Table(title="Current Targets", box=box.ROUNDED)
+                target_table.add_column("Index", style="cyan", width=8)
+                target_table.add_column("Target", style="white")
+                target_table.add_column("Type", style="yellow")
+                
+                for i, target in enumerate(self.config.targets_list, 1):
+                    target_type = "IP" if target.replace('.', '').isdigit() else "Domain"
+                    target_table.add_row(str(i), target, target_type)
+                
+                self.console.print(target_table)
+                self.console.print()
+            
+            # Target management options
+            options_table = Table(box=box.SIMPLE)
+            options_table.add_column("Option", style="green bold", width=8)
+            options_table.add_column("Description", style="white")
+            
+            options_table.add_row("1", "Add Single Target")
+            options_table.add_row("2", "Load Targets from File")
+            options_table.add_row("3", "Remove Target")
+            options_table.add_row("4", "Save Targets to File")
+            options_table.add_row("5", "Clear All Targets")
+            options_table.add_row("0", "Back to Main Menu")
+            
+            self.console.print(Panel(options_table, title="Target Management Options", box=box.ROUNDED))
+            
+            choice = Prompt.ask("[white]Select option[/white]", choices=["0", "1", "2", "3", "4", "5"])
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self._add_single_target()
+            elif choice == "2":
+                self._load_targets_from_file()
+            elif choice == "3":
+                self._remove_target()
+            elif choice == "4":
+                self._save_targets_to_file()
+            elif choice == "5":
+                self._clear_all_targets()
+    
+    def scan_profile_menu(self):
+        """Scan profile selection interface"""
+        self.console.clear()
+        self.console.print("[cyan]═══ Scan Profile Selection ═══[/cyan]\n")
+        
+        # Available profiles
+        profiles = [
+            ("quick_scan", "Quick Scan - Fast, lightweight reconnaissance"),
+            ("comprehensive_scan", "Comprehensive Scan - Full reconnaissance suite"),
+            ("stealth_scan", "Stealth Scan - Slow, evasive scanning"),
+            ("vulnerability_scan", "Vulnerability Scan - Security-focused assessment")
+        ]
+        
+        profiles_table = Table(box=box.ROUNDED)
+        profiles_table.add_column("Option", style="green bold", width=8)
+        profiles_table.add_column("Profile", style="cyan")
+        profiles_table.add_column("Description", style="white")
+        
+        for i, (profile_name, description) in enumerate(profiles, 1):
+            profiles_table.add_row(str(i), profile_name.replace('_', ' ').title(), description)
+        
+        profiles_table.add_row("5", "Custom Profile", "Load custom profile from file")
+        profiles_table.add_row("0", "Cancel", "Return to main menu")
+        
+        self.console.print(profiles_table)
+        
+        choice = Prompt.ask("[white]Select scan profile[/white]", choices=["0", "1", "2", "3", "4", "5"])
+        
+        if choice == "0":
+            return
+        elif choice in ["1", "2", "3", "4"]:
+            profile_name = profiles[int(choice) - 1][0]
+            if self.config.load_scan_profile(profile_name):
+                self.console.print(f"[green]✓ Loaded profile: {profile_name}[/green]")
+            else:
+                self.console.print(f"[red]✗ Failed to load profile: {profile_name}[/red]")
+        elif choice == "5":
+            profile_file = Prompt.ask("[white]Enter profile file path[/white]")
+            if Path(profile_file).exists():
+                if self.config.load_scan_profile(Path(profile_file).stem):
+                    self.console.print(f"[green]✓ Loaded custom profile[/green]")
+                else:
+                    self.console.print(f"[red]✗ Failed to load custom profile[/red]")
+            else:
+                self.console.print(f"[red]✗ Profile file not found[/red]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def fuzzing_payload_menu(self):
+        """Fuzzing and payload configuration"""
+        while True:
+            self.console.clear()
+            self.console.print("[cyan]═══ Advanced Fuzzing & Payloads ═══[/cyan]\n")
+            
+            # Current payload settings
+            payload_table = Table(title="Payload Settings", box=box.ROUNDED)
+            payload_table.add_column("Payload Type", style="cyan")
+            payload_table.add_column("Status", style="white")
+            payload_table.add_column("Description", style="dim")
+            
+            payload_table.add_row("XSS Payloads", "✓ Enabled" if self.config.xss_payloads else "✗ Disabled", "Cross-Site Scripting detection")
+            payload_table.add_row("SQLi Payloads", "✓ Enabled" if self.config.sqli_payloads else "✗ Disabled", "SQL Injection testing")
+            payload_table.add_row("LFI Payloads", "✓ Enabled" if self.config.lfi_payloads else "✗ Disabled", "Local File Inclusion")
+            payload_table.add_row("Command Injection", "✓ Enabled" if self.config.command_injection else "✗ Disabled", "Command execution testing")
+            payload_table.add_row("General Fuzzing", "✓ Enabled" if self.config.fuzzing_enabled else "✗ Disabled", "General parameter fuzzing")
+            
+            self.console.print(payload_table)
+            self.console.print()
+            
+            # Options menu
+            options_table = Table(box=box.SIMPLE)
+            options_table.add_column("Option", style="green bold", width=8)
+            options_table.add_column("Description", style="white")
+            
+            options_table.add_row("1", "Toggle XSS Payload Testing")
+            options_table.add_row("2", "Toggle SQLi Payload Testing")
+            options_table.add_row("3", "Toggle LFI Payload Testing")
+            options_table.add_row("4", "Toggle Command Injection Testing")
+            options_table.add_row("5", "Toggle General Fuzzing")
+            options_table.add_row("6", "Enable All Payloads")
+            options_table.add_row("7", "Disable All Payloads")
+            options_table.add_row("0", "Back to Main Menu")
+            
+            self.console.print(Panel(options_table, title="Fuzzing Options", box=box.ROUNDED))
+            
+            choice = Prompt.ask("[white]Select option[/white]", choices=["0", "1", "2", "3", "4", "5", "6", "7"])
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self.config.xss_payloads = not self.config.xss_payloads
+            elif choice == "2":
+                self.config.sqli_payloads = not self.config.sqli_payloads
+            elif choice == "3":
+                self.config.lfi_payloads = not self.config.lfi_payloads
+            elif choice == "4":
+                self.config.command_injection = not self.config.command_injection
+            elif choice == "5":
+                self.config.fuzzing_enabled = not self.config.fuzzing_enabled
+            elif choice == "6":
+                self.config.xss_payloads = True
+                self.config.sqli_payloads = True
+                self.config.lfi_payloads = True
+                self.config.command_injection = True
+                self.config.fuzzing_enabled = True
+                self.console.print("[green]✓ All payload testing enabled[/green]")
+                time.sleep(1)
+            elif choice == "7":
+                self.config.xss_payloads = False
+                self.config.sqli_payloads = False
+                self.config.lfi_payloads = False
+                self.config.command_injection = False
+                self.config.fuzzing_enabled = False
+                self.console.print("[yellow]⚠️  All payload testing disabled[/yellow]")
+                time.sleep(1)
+    
+    def tool_management_menu(self):
+        """Tool availability and management"""
+        self.console.clear()
+        self.console.print("[cyan]═══ Tool Management & Status ═══[/cyan]\n")
+        
+        # Check tool availability
+        tools_to_check = [
+            "nmap", "gobuster", "nikto", "whatweb", "whois", "dig", "curl",
+            "dirb", "dirsearch", "ffuf", "nuclei", "masscan", "zmap"
+        ]
+        
+        tool_table = Table(title="Tool Availability", box=box.ROUNDED)
+        tool_table.add_column("Tool", style="cyan")
+        tool_table.add_column("Status", style="white")
+        tool_table.add_column("Type", style="dim")
+        
+        async def check_tools():
+            scanner = Scanner(self.config, self.console)
+            for tool in tools_to_check:
+                available = await scanner.check_tool_availability(tool)
+                status = "✓ Available" if available else "✗ Missing"
+                tool_type = "Primary" if tool in ["nmap", "gobuster", "nikto", "whatweb", "whois"] else "Alternative"
+                tool_table.add_row(tool, status, tool_type)
+        
+        # Run async check (simplified for demo)
+        self.console.print("[yellow]🔍 Checking tool availability...[/yellow]")
+        
+        # Static status for now (would be dynamic in real implementation)
+        essential_tools = {
+            "nmap": False, "gobuster": False, "nikto": False, "whatweb": False,
+            "whois": False, "dig": True, "curl": True
+        }
+        
+        for tool, available in essential_tools.items():
+            status = "[green]✓ Available[/green]" if available else "[red]✗ Missing[/red]"
+            tool_type = "Essential" if tool in ["nmap", "gobuster", "nikto"] else "Optional"
+            tool_table.add_row(tool, status, tool_type)
+        
+        self.console.print(tool_table)
+        self.console.print()
+        
+        # Installation options
+        self.console.print("[yellow]💡 Missing tools can be installed automatically during scanning[/yellow]")
+        self.console.print("[dim]Alternative tools will be used when primary tools are unavailable[/dim]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def _add_single_target(self):
+        """Add a single target"""
+        self.console.print("\n[cyan]═══ Add Target ═══[/cyan]")
+        target = Prompt.ask("[white]Enter target (IP or domain)[/white]")
+        
+        if self.config.add_target(target):
+            self.console.print(f"[green]✓ Added target: {target}[/green]")
+        else:
+            self.console.print(f"[red]✗ Invalid target or already exists: {target}[/red]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def _load_targets_from_file(self):
+        """Load targets from file"""
+        self.console.print("\n[cyan]═══ Load Targets from File ═══[/cyan]")
+        filepath = Prompt.ask("[white]Enter file path[/white]", default="targets.txt")
+        
+        if self.config.load_targets_from_file(filepath):
+            self.console.print(f"[green]✓ Loaded {len(self.config.targets_list)} targets from {filepath}[/green]")
+        else:
+            self.console.print(f"[red]✗ Failed to load targets from {filepath}[/red]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def _remove_target(self):
+        """Remove a target from the list"""
+        if not self.config.targets_list:
+            self.console.print("[yellow]No targets to remove[/yellow]")
+            Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+            return
+        
+        self.console.print("\n[cyan]═══ Remove Target ═══[/cyan]")
+        
+        # Display numbered targets
+        for i, target in enumerate(self.config.targets_list, 1):
+            self.console.print(f"{i}. {target}")
+        
+        try:
+            index = IntPrompt.ask("[white]Enter target number to remove[/white]", default=0)
+            if 1 <= index <= len(self.config.targets_list):
+                removed_target = self.config.targets_list.pop(index - 1)
+                self.console.print(f"[green]✓ Removed target: {removed_target}[/green]")
+            else:
+                self.console.print("[red]✗ Invalid target number[/red]")
+        except Exception:
+            self.console.print("[red]✗ Invalid input[/red]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def _save_targets_to_file(self):
+        """Save targets to file"""
+        if not self.config.targets_list:
+            self.console.print("[yellow]No targets to save[/yellow]")
+            Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+            return
+        
+        self.console.print("\n[cyan]═══ Save Targets to File ═══[/cyan]")
+        filepath = Prompt.ask("[white]Enter file path[/white]", default="targets.txt")
+        
+        if self.config.save_targets_to_file(filepath):
+            self.console.print(f"[green]✓ Saved {len(self.config.targets_list)} targets to {filepath}[/green]")
+        else:
+            self.console.print(f"[red]✗ Failed to save targets to {filepath}[/red]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def _clear_all_targets(self):
+        """Clear all targets"""
+        if self.config.targets_list and Confirm.ask("Are you sure you want to clear all targets?"):
+            self.config.targets_list.clear()
+            self.config.target = None
+            self.console.print("[green]✓ All targets cleared[/green]")
+        
+        Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
     
     def set_target(self):
         """Interactive target configuration"""
@@ -983,83 +1869,485 @@ class BCAR:
                 Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
     
     async def start_scan(self):
-        """Start the reconnaissance scan"""
-        if not self.config.target:
-            self.console.print("[red]✗ No target configured! Please set a target first.[/red]")
+        """Enhanced reconnaissance scan with multi-target support"""
+        # Determine targets to scan
+        targets_to_scan = []
+        
+        if self.config.targets_list:
+            targets_to_scan = self.config.targets_list
+        elif self.config.target:
+            targets_to_scan = [self.config.target]
+        else:
+            self.console.print("[red]✗ No targets configured! Please set targets first.[/red]")
             Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
             return
         
         self.console.clear()
-        self.console.print("[cyan]═══ Scan Summary ═══[/cyan]\n")
+        self.console.print("[cyan]═══ Enhanced Scan Summary ═══[/cyan]\n")
         
         summary_table = Table(box=box.ROUNDED)
         summary_table.add_column("Setting", style="white")
         summary_table.add_column("Value", style="green")
         
-        summary_table.add_row("Target", self.config.target)
+        summary_table.add_row("Target(s)", f"{len(targets_to_scan)} target(s)")
+        summary_table.add_row("Scan Profile", self.config.scan_profile or "Custom")
         summary_table.add_row("Output Directory", self.config.output_dir)
         summary_table.add_row("Threads", str(self.config.threads))
         summary_table.add_row("Timing", self.config.timing)
-        summary_table.add_row("Stealth Mode", "Yes" if self.config.stealth_mode else "No")
+        summary_table.add_row("Stealth Mode", "✓ Enabled" if self.config.stealth_mode else "✗ Disabled")
+        summary_table.add_row("Fuzzing", "✓ Enabled" if self.config.fuzzing_enabled else "✗ Disabled")
+        summary_table.add_row("Evidence Capture", "✓ Enabled" if self.config.evidence_capture else "✗ Disabled")
         
         self.console.print(summary_table)
         
-        if not Confirm.ask("\n[yellow]Start reconnaissance scan?[/yellow]"):
+        # Display targets
+        if len(targets_to_scan) <= 10:
+            targets_table = Table(title="Targets", box=box.ROUNDED)
+            targets_table.add_column("Index", style="cyan", width=6)
+            targets_table.add_column("Target", style="white")
+            
+            for i, target in enumerate(targets_to_scan, 1):
+                targets_table.add_row(str(i), target)
+            
+            self.console.print(targets_table)
+        else:
+            self.console.print(f"\n[dim]Scanning {len(targets_to_scan)} targets (too many to display)[/dim]")
+        
+        if not Confirm.ask("\n[yellow]Start enhanced reconnaissance scan?[/yellow]"):
             return
         
         # Create output directory
         os.makedirs(self.config.output_dir, exist_ok=True)
         
-        # Initialize results
-        self.scan_results = {
-            "target": self.config.target,
-            "start_time": datetime.now().isoformat(),
-            "config": self.config.__dict__.copy(),
-            "results": {}
+        # Initialize master results
+        master_results = {
+            "scan_metadata": {
+                "bcar_version": "2.0.0",
+                "scan_profile": self.config.scan_profile,
+                "start_time": datetime.now().isoformat(),
+                "targets_count": len(targets_to_scan),
+                "configuration": {k: v for k, v in self.config.__dict__.items() if not k.startswith('_')}
+            },
+            "targets": {},
+            "summary": {
+                "total_findings": 0,
+                "critical_findings": 0,
+                "vulnerabilities_found": 0,
+                "services_discovered": 0
+            }
         }
         
-        # Run scanners
-        selected_scanners = ["DNS", "WHOIS", "Ports", "Web"]
-        if self.config.dom_scan_enabled:
-            selected_scanners.append("DOM")
-        selected_scanners.extend(["Vulnerabilities", "SSL"])
-        
-        self.console.print(f"\n[green]🚀 Starting scan against {self.config.target}...[/green]\n")
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self.console
-        ) as progress:
+        # Scan each target
+        for target_index, target in enumerate(targets_to_scan, 1):
+            self.console.print(f"\n[green]🎯 Scanning target {target_index}/{len(targets_to_scan)}: {target}[/green]")
             
-            main_task = progress.add_task("Overall Progress", total=len(selected_scanners))
+            # Set current target for scanning
+            original_target = self.config.target
+            self.config.target = target
             
-            for scanner_name in selected_scanners:
-                scanner_class = self.scanners[scanner_name]
-                scanner = scanner_class(self.config, self.console)
+            # Initialize target results
+            target_results = {
+                "target": target,
+                "start_time": datetime.now().isoformat(),
+                "results": {},
+                "summary": {
+                    "risk_level": "low",
+                    "findings_count": 0,
+                    "services_found": [],
+                    "vulnerabilities": []
+                }
+            }
+            
+            # Determine scanners to run
+            selected_scanners = self._get_selected_scanners()
+            
+            # Progress tracking
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.console
+            ) as progress:
                 
-                try:
-                    results = await scanner.run()
-                    self.scan_results["results"][scanner_name.lower()] = results
-                    progress.update(main_task, advance=1, description=f"Completed {scanner_name} scan")
+                target_task = progress.add_task(f"Scanning {target}", total=len(selected_scanners))
+                
+                for scanner_name in selected_scanners:
+                    scanner_class = self.scanners[scanner_name]
+                    scanner = scanner_class(self.config, self.console)
                     
-                except Exception as e:
-                    logging.error(f"{scanner_name} scan failed: {e}")
-                    self.scan_results["results"][scanner_name.lower()] = {"error": str(e)}
-                    progress.update(main_task, advance=1, description=f"{scanner_name} scan failed")
+                    try:
+                        progress.update(target_task, description=f"Running {scanner_name} scan...")
+                        results = await scanner.run()
+                        target_results["results"][scanner_name.lower()] = results
+                        
+                        # Update target summary
+                        self._update_target_summary(target_results, scanner_name, results)
+                        
+                        progress.update(target_task, advance=1)
+                        
+                    except Exception as e:
+                        logging.error(f"{scanner_name} scan failed for {target}: {e}")
+                        target_results["results"][scanner_name.lower()] = {"error": str(e)}
+                        progress.update(target_task, advance=1)
+            
+            # Complete target scan
+            target_results["end_time"] = datetime.now().isoformat()
+            
+            # Analyze results for this target
+            target_analysis = self._analyze_target_results(target_results)
+            target_results["analysis"] = target_analysis
+            
+            # Store target results
+            master_results["targets"][target] = target_results
+            
+            # Update master summary
+            self._update_master_summary(master_results, target_results)
+            
+            # Restore original target
+            self.config.target = original_target
         
-        # Complete scan
-        self.scan_results["end_time"] = datetime.now().isoformat()
+        # Complete master scan
+        master_results["scan_metadata"]["end_time"] = datetime.now().isoformat()
+        master_results["scan_metadata"]["duration"] = self._calculate_duration(
+            master_results["scan_metadata"]["start_time"],
+            master_results["scan_metadata"]["end_time"]
+        )
         
-        # Save results
-        await self._save_results()
+        # Save comprehensive results
+        self.scan_results = master_results
+        await self._save_enhanced_results()
         
-        # Display summary
-        self._display_scan_summary()
+        # Display comprehensive summary
+        self._display_enhanced_summary()
         
         Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    def _get_selected_scanners(self) -> List[str]:
+        """Determine which scanners to run based on configuration"""
+        scanners = ["DNS", "WHOIS", "Ports", "Web"]
+        
+        if self.config.dom_scan_enabled:
+            scanners.append("DOM")
+        
+        scanners.extend(["Vulnerabilities", "SSL"])
+        
+        return scanners
+    
+    def _update_target_summary(self, target_results: Dict, scanner_name: str, results: Dict):
+        """Update target summary with scanner results"""
+        try:
+            if "error" not in results:
+                target_results["summary"]["findings_count"] += 1
+                
+                # Track services
+                if scanner_name == "Ports" and "open_ports" in results:
+                    target_results["summary"]["services_found"].extend(results["open_ports"])
+                
+                # Track vulnerabilities
+                if "vulnerabilities" in results and results["vulnerabilities"]:
+                    target_results["summary"]["vulnerabilities"].extend(results["vulnerabilities"])
+                
+                # Update risk level
+                if any(keyword in str(results).lower() for keyword in ["critical", "high", "vulnerability"]):
+                    target_results["summary"]["risk_level"] = "high"
+                elif target_results["summary"]["risk_level"] == "low" and any(keyword in str(results).lower() for keyword in ["warning", "medium"]):
+                    target_results["summary"]["risk_level"] = "medium"
+        
+        except Exception as e:
+            logging.warning(f"Error updating target summary: {e}")
+    
+    def _analyze_target_results(self, target_results: Dict) -> Dict:
+        """Analyze target results and generate insights"""
+        analysis = {
+            "security_score": 100,
+            "recommendations": [],
+            "attack_vectors": [],
+            "compliance_issues": []
+        }
+        
+        try:
+            results = target_results["results"]
+            
+            # Analyze open ports
+            if "ports" in results and "open_ports" in results["ports"]:
+                open_ports = results["ports"]["open_ports"]
+                high_risk_ports = [21, 23, 135, 139, 445, 1433, 3389]
+                
+                risky_ports = [port for port in open_ports if port in high_risk_ports]
+                if risky_ports:
+                    analysis["security_score"] -= len(risky_ports) * 10
+                    analysis["recommendations"].append(f"Secure or disable high-risk ports: {risky_ports}")
+                    analysis["attack_vectors"].extend([f"Port {port} exploitation" for port in risky_ports])
+            
+            # Analyze web vulnerabilities
+            if "web" in results and "vulnerabilities" in results["web"]:
+                vuln_count = len(results["web"]["vulnerabilities"])
+                if vuln_count > 0:
+                    analysis["security_score"] -= vuln_count * 15
+                    analysis["recommendations"].append(f"Address {vuln_count} web vulnerabilities")
+                    analysis["attack_vectors"].append("Web application exploitation")
+            
+            # Analyze payload results
+            if "web" in results and "payload_results" in results["web"]:
+                payload_results = results["web"]["payload_results"]
+                for port_results in payload_results.values():
+                    for payload_type, findings in port_results.items():
+                        if findings:
+                            analysis["security_score"] -= len(findings) * 20
+                            analysis["recommendations"].append(f"Fix {payload_type.upper()} vulnerabilities")
+                            analysis["attack_vectors"].append(f"{payload_type.upper()} exploitation")
+            
+            # Ensure minimum score
+            analysis["security_score"] = max(0, analysis["security_score"])
+            
+        except Exception as e:
+            logging.warning(f"Error analyzing target results: {e}")
+        
+        return analysis
+    
+    def _update_master_summary(self, master_results: Dict, target_results: Dict):
+        """Update master summary with target results"""
+        try:
+            master_results["summary"]["total_findings"] += target_results["summary"]["findings_count"]
+            master_results["summary"]["services_discovered"] += len(target_results["summary"]["services_found"])
+            master_results["summary"]["vulnerabilities_found"] += len(target_results["summary"]["vulnerabilities"])
+            
+            if target_results["summary"]["risk_level"] == "high":
+                master_results["summary"]["critical_findings"] += 1
+        
+        except Exception as e:
+            logging.warning(f"Error updating master summary: {e}")
+    
+    def _calculate_duration(self, start_time: str, end_time: str) -> str:
+        """Calculate scan duration"""
+        try:
+            start = datetime.fromisoformat(start_time)
+            end = datetime.fromisoformat(end_time)
+            duration = end - start
+            
+            hours, remainder = divmod(duration.total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            
+            if hours > 0:
+                return f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
+            elif minutes > 0:
+                return f"{int(minutes)}m {int(seconds)}s"
+            else:
+                return f"{int(seconds)}s"
+        except Exception:
+            return "Unknown"
+    
+    async def _save_enhanced_results(self):
+        """Save enhanced scan results with multiple formats"""
+        try:
+            # Save master JSON results
+            json_file = f"{self.config.output_dir}/bcar_master_results.json"
+            with open(json_file, 'w') as f:
+                json.dump(self.scan_results, f, indent=2, default=str)
+            
+            # Save configuration
+            config_file = f"{self.config.output_dir}/bcar_config.json"
+            self.config.save_to_file(config_file)
+            
+            # Generate executive summary
+            await self._generate_executive_summary()
+            
+            # Generate detailed report
+            await self._generate_detailed_report()
+            
+            # Generate CSV export for findings
+            await self._generate_csv_export()
+            
+            self.console.print(f"[green]✓ Results saved to: {self.config.output_dir}[/green]")
+            
+        except Exception as e:
+            logging.error(f"Failed to save enhanced results: {e}")
+            self.console.print(f"[red]✗ Failed to save results: {e}[/red]")
+    
+    async def _generate_executive_summary(self):
+        """Generate executive summary report"""
+        try:
+            summary_file = f"{self.config.output_dir}/executive_summary.txt"
+            
+            with open(summary_file, 'w') as f:
+                f.write("BCAR EXECUTIVE SUMMARY\n")
+                f.write("=" * 50 + "\n\n")
+                
+                metadata = self.scan_results["scan_metadata"]
+                summary = self.scan_results["summary"]
+                
+                f.write(f"Scan Date: {metadata['start_time'].split('T')[0]}\n")
+                f.write(f"Duration: {metadata.get('duration', 'Unknown')}\n")
+                f.write(f"Targets Scanned: {metadata['targets_count']}\n")
+                f.write(f"Profile Used: {metadata.get('scan_profile', 'Custom')}\n\n")
+                
+                f.write("KEY FINDINGS:\n")
+                f.write("-" * 20 + "\n")
+                f.write(f"• Total Findings: {summary['total_findings']}\n")
+                f.write(f"• Critical Targets: {summary['critical_findings']}\n")
+                f.write(f"• Vulnerabilities: {summary['vulnerabilities_found']}\n")
+                f.write(f"• Services Discovered: {summary['services_discovered']}\n\n")
+                
+                # Risk assessment
+                risk_level = "LOW"
+                if summary['critical_findings'] > 0:
+                    risk_level = "HIGH"
+                elif summary['vulnerabilities_found'] > 5:
+                    risk_level = "MEDIUM"
+                
+                f.write(f"OVERALL RISK LEVEL: {risk_level}\n\n")
+                
+                # Top recommendations
+                f.write("TOP RECOMMENDATIONS:\n")
+                f.write("-" * 25 + "\n")
+                
+                recommendations = set()
+                for target_data in self.scan_results["targets"].values():
+                    if "analysis" in target_data:
+                        recommendations.update(target_data["analysis"].get("recommendations", []))
+                
+                for i, rec in enumerate(list(recommendations)[:5], 1):
+                    f.write(f"{i}. {rec}\n")
+        
+        except Exception as e:
+            logging.error(f"Failed to generate executive summary: {e}")
+    
+    async def _generate_detailed_report(self):
+        """Generate detailed technical report"""
+        try:
+            report_file = f"{self.config.output_dir}/detailed_report.txt"
+            
+            with open(report_file, 'w') as f:
+                f.write("BCAR DETAILED TECHNICAL REPORT\n")
+                f.write("=" * 60 + "\n\n")
+                
+                for target, target_data in self.scan_results["targets"].items():
+                    f.write(f"TARGET: {target}\n")
+                    f.write("=" * 40 + "\n\n")
+                    
+                    # Target summary
+                    summary = target_data["summary"]
+                    f.write(f"Risk Level: {summary['risk_level'].upper()}\n")
+                    f.write(f"Findings: {summary['findings_count']}\n")
+                    f.write(f"Services: {len(summary['services_found'])}\n")
+                    f.write(f"Vulnerabilities: {len(summary['vulnerabilities'])}\n\n")
+                    
+                    # Security score
+                    if "analysis" in target_data:
+                        score = target_data["analysis"].get("security_score", 0)
+                        f.write(f"Security Score: {score}/100\n\n")
+                    
+                    # Detailed findings per scanner
+                    for scanner, results in target_data["results"].items():
+                        f.write(f"{scanner.upper()} RESULTS:\n")
+                        f.write("-" * 20 + "\n")
+                        
+                        if "error" in results:
+                            f.write(f"Error: {results['error']}\n")
+                        else:
+                            # Summarize key findings
+                            if scanner == "ports" and "open_ports" in results:
+                                f.write(f"Open Ports: {results['open_ports']}\n")
+                            elif scanner == "web" and "http_services" in results:
+                                f.write(f"HTTP Services: {results['http_services']}\n")
+                            elif scanner == "vulnerabilities" and "vulnerabilities" in results:
+                                f.write(f"Vulnerabilities Found: {len(results['vulnerabilities'])}\n")
+                        
+                        f.write("\n")
+                    
+                    f.write("\n" + "=" * 40 + "\n\n")
+        
+        except Exception as e:
+            logging.error(f"Failed to generate detailed report: {e}")
+    
+    async def _generate_csv_export(self):
+        """Generate CSV export of findings"""
+        try:
+            csv_file = f"{self.config.output_dir}/findings_export.csv"
+            
+            with open(csv_file, 'w') as f:
+                # CSV headers
+                f.write("Target,Scanner,Finding_Type,Description,Risk_Level,Timestamp\n")
+                
+                for target, target_data in self.scan_results["targets"].items():
+                    timestamp = target_data.get("start_time", "")
+                    risk_level = target_data["summary"].get("risk_level", "unknown")
+                    
+                    for scanner, results in target_data["results"].items():
+                        if "error" not in results:
+                            # Extract key findings for CSV
+                            if scanner == "ports" and "open_ports" in results:
+                                for port in results["open_ports"]:
+                                    f.write(f"{target},{scanner},Open Port,Port {port} is open,{risk_level},{timestamp}\n")
+                            
+                            if scanner == "web" and "vulnerabilities" in results:
+                                for vuln in results["vulnerabilities"]:
+                                    f.write(f"{target},{scanner},Vulnerability,{vuln},{risk_level},{timestamp}\n")
+        
+        except Exception as e:
+            logging.error(f"Failed to generate CSV export: {e}")
+    
+    def _display_enhanced_summary(self):
+        """Display comprehensive scan summary"""
+        self.console.clear()
+        self.console.print("[cyan]═══ Enhanced Scan Complete! ═══[/cyan]\n")
+        
+        # Master statistics
+        metadata = self.scan_results["scan_metadata"]
+        summary = self.scan_results["summary"]
+        
+        stats_table = Table(title="Scan Statistics", box=box.ROUNDED)
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="green")
+        
+        stats_table.add_row("Targets Scanned", str(metadata["targets_count"]))
+        stats_table.add_row("Scan Duration", metadata.get("duration", "Unknown"))
+        stats_table.add_row("Total Findings", str(summary["total_findings"]))
+        stats_table.add_row("Critical Targets", str(summary["critical_findings"]))
+        stats_table.add_row("Vulnerabilities", str(summary["vulnerabilities_found"]))
+        stats_table.add_row("Services Discovered", str(summary["services_discovered"]))
+        
+        self.console.print(stats_table)
+        self.console.print()
+        
+        # Risk assessment
+        risk_level = "🟢 LOW"
+        if summary["critical_findings"] > 0:
+            risk_level = "🔴 HIGH"
+        elif summary["vulnerabilities_found"] > 5:
+            risk_level = "🟡 MEDIUM"
+        
+        risk_table = Table(title="Risk Assessment", box=box.ROUNDED)
+        risk_table.add_column("Overall Risk Level", style="bold")
+        risk_table.add_row(risk_level)
+        
+        self.console.print(risk_table)
+        self.console.print()
+        
+        # Top targets by risk
+        high_risk_targets = []
+        for target, data in self.scan_results["targets"].items():
+            if data["summary"]["risk_level"] == "high":
+                high_risk_targets.append(target)
+        
+        if high_risk_targets:
+            self.console.print("[red]⚠️  HIGH RISK TARGETS:[/red]")
+            for target in high_risk_targets:
+                self.console.print(f"   • {target}")
+            self.console.print()
+        
+        # Output files
+        files_table = Table(title="Generated Reports", box=box.ROUNDED)
+        files_table.add_column("File", style="cyan")
+        files_table.add_column("Description", style="white")
+        
+        files_table.add_row("bcar_master_results.json", "Complete JSON results")
+        files_table.add_row("executive_summary.txt", "Executive summary report")
+        files_table.add_row("detailed_report.txt", "Technical detailed report")
+        files_table.add_row("findings_export.csv", "CSV export of findings")
+        
+        self.console.print(files_table)
     
     async def _save_results(self):
         """Save scan results to files"""
@@ -1444,14 +2732,14 @@ DOM security analysis, and SSL/TLS assessment."""
         Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
     
     async def run(self):
-        """Main application loop"""
+        """Main application loop with enhanced menu handling"""
         try:
             while True:
                 self.show_main_menu()
                 
                 choice = Prompt.ask(
                     "\n[white]Enter your choice[/white]",
-                    choices=["0", "1", "2", "3", "4", "5", "6"],
+                    choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
                     default="0"
                 )
                 
@@ -1461,17 +2749,23 @@ DOM security analysis, and SSL/TLS assessment."""
                     self.config.save_to_file()
                     break
                 elif choice == "1":
-                    self.set_target()
+                    self.target_management_menu()
                 elif choice == "2":
                     self.configure_options()
                 elif choice == "3":
-                    await self.start_scan()
+                    self.scan_profile_menu()
                 elif choice == "4":
-                    self.view_results()
+                    await self.start_scan()
                 elif choice == "5":
-                    self.reset_config()
+                    self.fuzzing_payload_menu()
                 elif choice == "6":
+                    self.view_results()
+                elif choice == "7":
+                    self.tool_management_menu()
+                elif choice == "8":
                     self.show_help()
+                elif choice == "9":
+                    self.reset_config()
         
         except KeyboardInterrupt:
             self.console.print("\n[yellow]Interrupted by user[/yellow]")

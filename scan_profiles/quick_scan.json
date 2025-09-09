@@ -1,0 +1,27 @@
+{
+    "name": "Quick Scan",
+    "description": "Fast, lightweight scan for basic reconnaissance",
+    "config": {
+        "threads": 25,
+        "timing": "fast",
+        "stealth_mode": false,
+        "scanners": {
+            "dns": true,
+            "whois": true,
+            "ports": {
+                "enabled": true,
+                "type": "quick",
+                "ports": "1-1000"
+            },
+            "web": {
+                "enabled": true,
+                "wordlist_size": "small"
+            },
+            "dom": false,
+            "vulnerabilities": false,
+            "ssl": true
+        }
+    },
+    "estimated_time": "2-5 minutes",
+    "risk_level": "low"
+}

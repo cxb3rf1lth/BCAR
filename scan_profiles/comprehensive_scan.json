@@ -1,0 +1,28 @@
+{
+    "name": "Comprehensive Scan",
+    "description": "Thorough reconnaissance with all scanning modules",
+    "config": {
+        "threads": 50,
+        "timing": "normal",
+        "stealth_mode": false,
+        "scanners": {
+            "dns": true,
+            "whois": true,
+            "ports": {
+                "enabled": true,
+                "type": "full",
+                "ports": "1-65535"
+            },
+            "web": {
+                "enabled": true,
+                "wordlist_size": "large",
+                "fuzzing": true
+            },
+            "dom": true,
+            "vulnerabilities": true,
+            "ssl": true
+        }
+    },
+    "estimated_time": "30-60 minutes",
+    "risk_level": "medium"
+}
