@@ -224,6 +224,19 @@ class BCARConfig:
             return True
         return False
     
+    def save_targets_to_file(self, filepath: str = "targets.txt") -> bool:
+        """Save current targets list to file"""
+        try:
+            with open(filepath, 'w') as f:
+                f.write("# BCAR Targets File\n")
+                f.write("# One target per line (IP addresses or domain names)\n\n")
+                for target in self.targets_list:
+                    f.write(f"{target}\n")
+            return True
+        except Exception as e:
+            logging.error(f"Error saving targets file: {e}")
+            return False
+    
     def get_wordlist_path(self, wordlist_type: str, size: str = "medium") -> Optional[str]:
         """Get path to wordlist based on type and size"""
         wordlist_paths = {
@@ -1144,28 +1157,6 @@ class WebScanner(Scanner):
         
         except Exception as e:
             logging.error(f"Failed to save web results: {e}")
-                            
-                            result = await asyncio.create_subprocess_exec(
-                                *cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE
-                            )
-                            
-                            await result.communicate()
-                            
-                            if result.returncode == 0:
-                                web_results["directories"][port] = f"gobuster_{port}.txt"
-                        
-                        except Exception as e:
-                            logging.warning(f"Gobuster scan failed for port {port}: {e}")
-                    
-                    progress.update(task, completed=100)
-        
-        except Exception as e:
-            logging.error(f"Web scanning failed: {e}")
-        
-        self.results = web_results
-        return web_results
 
 class DOMScanner(Scanner):
     """DOM-based XSS and security scanning"""
