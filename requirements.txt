@@ -1,0 +1,15 @@
+# BCAR Python Requirements
+# Core TUI and console libraries
+rich>=13.7.0
+
+# Additional useful libraries for advanced features
+aiofiles>=23.0.0
+aiohttp>=3.8.0
+pyyaml>=6.0
+python-dateutil>=2.8.0
+click>=8.1.0
+
+# Optional dependencies for enhanced functionality  
+dnspython>=2.4.0
+cryptography>=41.0.0
+requests>=2.31.0

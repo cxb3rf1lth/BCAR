@@ -1,5 +1,30 @@
 # BCAR - BlackCell Auto Recon
 
+## 🎉 Now Available in Two Versions!
+
+### 🐍 **NEW: Python Version 2.0** (Recommended)
+A complete rewrite with advanced TUI interface, enhanced features, and improved performance.
+
+**Quick Start (Python):**
+```bash
+python3 install_bcar.py  # Automatic setup
+python3 bcar.py          # Start with beautiful TUI interface
+```
+
+**Key Features:**
+- 🎨 **Professional TUI Interface** - Rich terminal UI with no command-line flags needed
+- 🚀 **Enhanced Performance** - Async operations and concurrent scanning
+- 📊 **Advanced Reporting** - JSON, structured data, and visual progress tracking
+- 🔧 **Modular Architecture** - Object-oriented design for flexibility
+- ⚙️ **Smart Configuration** - JSON-based config with validation
+
+➡️ **[See Python Documentation](README_PYTHON.md)** for complete details
+
+---
+
+### 🐚 **Original: Bash Version 1.0** (Legacy)
+The proven bash implementation with comprehensive scanning capabilities.
+
 [![CI/CD Pipeline](https://github.com/cxb3rf1lth/BCAR/workflows/BCAR%20CI%2FCD%20Pipeline/badge.svg)](https://github.com/cxb3rf1lth/BCAR/actions)
 [![ShellCheck](https://img.shields.io/badge/ShellCheck-passing-brightgreen)](https://www.shellcheck.net/)
 [![Security](https://img.shields.io/badge/Security-Hardened-blue)](#security-features)
