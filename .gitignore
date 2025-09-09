@@ -25,3 +25,6 @@ Thumbs.db
 # Backup files
 *.bak
 *.backup
+
+# External dependencies
+domscan/
