@@ -111,7 +111,7 @@ class Scanner:
         try:
             ipaddress.ip_address(target)
             return True
-        except ipaddress.AddressValueError:
+        except ValueError:
             pass
         
         # Enhanced domain validation - must not start or end with hyphen or dot
@@ -839,14 +839,18 @@ class BCAR:
     
     def print_banner(self):
         """Display the BCAR banner"""
-        banner = """
-██████╗  ██████╗ █████╗ ██████╗ 
-██╔══██╗██╔════╝██╔══██╗██╔══██╗
-██████╔╝██║     ███████║██████╔╝
-██╔══██╗██║     ██╔══██║██╔══██╗
-██████╔╝╚██████╗██║  ██║██║  ██║
-╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝
-        """
+        banner = r"""        __________.__      _____          __   _________ ________ .__  .__   
+\______   \  |    /  |  |   ____ |  | _\_   ___ \_____  \|  | |  |  
+ |    |  _/  |   /   |  |__/ ___\|  |/ /    \  \/  _(__  <|  | |  |  
+ |    |   \  |__/    ^   /\  \___|    <\     \____/       \  |_|  |__
+ |______  /____/\____   |  \___  >__|_ \\______  /______  /____/____/
+        \/           |__|      \/     \/       \/       \/           
+   _____          __        __________                               
+  /  _  \  __ ___/  |_  ____\______   \ ____   ____  ____   ____     
+ /  /_\  \|  |  \   __\/  _ \|       _// __ \_/ ___\/  _ \ /    \    
+/    |    \  |  /|  | (  <_> )    |   \  ___/\  \__(  <_> )   |  \   
+\____|__  /____/ |__|  \____/|____|_  /\___  >\___  >____/|___|  /   
+        \/                          \/     \/     \/           \/"""
         
         self.console.print(Panel(
             f"[red]{banner}[/red]\n[white bold]BlackCell Auto Recon v2.0.0[/white bold]\n[cyan]Advanced Python Reconnaissance Framework[/cyan]",
