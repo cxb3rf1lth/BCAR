@@ -461,21 +461,29 @@ class Scanner:
         return True
 
 class DNSScanner(Scanner):
-    """DNS enumeration and zone transfer testing"""
+    """Enhanced DNS enumeration with subdomain discovery and zone transfer testing"""
     
     async def run(self) -> Dict[str, Any]:
-        """Perform DNS reconnaissance"""
-        self.console.print("[cyan]🔍 Starting DNS enumeration...[/cyan]")
+        """Perform comprehensive DNS reconnaissance"""
+        self.console.print("[cyan]🔍 Starting enhanced DNS enumeration...[/cyan]")
         
         dns_results = {
             "records": {},
             "zone_transfer": False,
-            "subdomains": []
+            "subdomains": [],
+            "nameservers": [],
+            "mx_servers": [],
+            "dns_security": {},
+            "wildcards": [],
+            "reverse_dns": {}
         }
         
         try:
-            # DNS record enumeration
-            record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CNAME']
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/dns", exist_ok=True)
+            
+            # Enhanced DNS record enumeration
+            record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CNAME', 'PTR', 'SRV', 'CAA']
             
             with Progress(
                 SpinnerColumn(),
@@ -485,52 +493,272 @@ class DNSScanner(Scanner):
                 console=self.console
             ) as progress:
                 
-                task = progress.add_task("Enumerating DNS records...", total=len(record_types))
+                total_tasks = len(record_types) + (2 if self.config.subdomain_enum_enabled else 0)
+                task = progress.add_task("Enumerating DNS records...", total=total_tasks)
                 
+                # Standard DNS record enumeration
                 for record_type in record_types:
                     try:
                         cmd = ["dig", "+short", record_type, self.config.target]
-                        result = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await result.communicate()
+                        if self.config.dns_servers:
+                            cmd.extend([f"@{self.config.dns_servers[0]}"])
                         
-                        if result.returncode == 0 and stdout:
-                            dns_results["records"][record_type] = stdout.decode().strip().split('\n')
+                        returncode, stdout, stderr = await self.safe_command_execution(cmd)
+                        
+                        if returncode == 0 and stdout.strip():
+                            records = [line.strip() for line in stdout.strip().split('\n') if line.strip()]
+                            dns_results["records"][record_type] = records
+                            
+                            # Extract specific information
+                            if record_type == "NS":
+                                dns_results["nameservers"] = records
+                            elif record_type == "MX":
+                                dns_results["mx_servers"] = records
                         
                     except Exception as e:
-                        logging.warning(f"DNS {record_type} query failed: {e}")
+                        self.scan_result.add_warning(f"DNS {record_type} query failed: {e}")
                     
                     progress.update(task, advance=1)
-            
-            # Zone transfer test
-            if 'NS' in dns_results["records"]:
-                self.console.print("[yellow]🔄 Testing zone transfers...[/yellow]")
-                for ns_server in dns_results["records"]["NS"]:
-                    try:
-                        cmd = ["dig", "axfr", self.config.target, f"@{ns_server.strip()}"]
-                        result = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await result.communicate()
-                        
-                        if result.returncode == 0 and "failed" not in stdout.decode().lower():
-                            dns_results["zone_transfer"] = True
-                            self.console.print(f"[red]⚠️  Zone transfer successful on {ns_server}![/red]")
-                            break
+                
+                # Zone transfer testing
+                if dns_results["nameservers"]:
+                    progress.update(task, description="Testing zone transfers...")
+                    for ns_server in dns_results["nameservers"]:
+                        try:
+                            ns_clean = ns_server.split()[0] if ' ' in ns_server else ns_server
+                            if ns_clean.endswith('.'):
+                                ns_clean = ns_clean[:-1]
                             
-                    except Exception as e:
-                        logging.warning(f"Zone transfer test failed for {ns_server}: {e}")
-            
+                            cmd = ["dig", "axfr", self.config.target, f"@{ns_clean}"]
+                            returncode, stdout, stderr = await self.safe_command_execution(cmd, timeout=30)
+                            
+                            if returncode == 0 and stdout and "failed" not in stdout.lower() and "connection timed out" not in stdout.lower():
+                                # Check if we actually got zone data
+                                lines = stdout.strip().split('\n')
+                                if len(lines) > 2:  # More than just SOA records
+                                    dns_results["zone_transfer"] = True
+                                    await self.safe_file_operation("write", 
+                                        f"{self.config.output_dir}/dns/zone_transfer_{ns_clean}.txt", stdout)
+                                    self.console.print(f"[red]⚠️  Zone transfer successful on {ns_clean}![/red]")
+                                    break
+                                    
+                        except Exception as e:
+                            self.scan_result.add_warning(f"Zone transfer test failed for {ns_server}: {e}")
+                
+                # Subdomain enumeration (if enabled)
+                if self.config.subdomain_enum_enabled:
+                    progress.update(task, description="Enumerating subdomains...")
+                    subdomains = await self._enumerate_subdomains()
+                    dns_results["subdomains"] = subdomains
+                    progress.update(task, advance=1)
+                    
+                    # Wildcard detection
+                    progress.update(task, description="Testing for DNS wildcards...")
+                    wildcards = await self._detect_wildcards()
+                    dns_results["wildcards"] = wildcards
+                    progress.update(task, advance=1)
+                
+                # DNS security checks
+                dns_results["dns_security"] = await self._check_dns_security()
+        
         except Exception as e:
-            logging.error(f"DNS scanning failed: {e}")
+            self.scan_result.add_error(f"DNS scanning failed: {e}")
         
         self.results = dns_results
         return dns_results
+    
+    async def _enumerate_subdomains(self) -> List[str]:
+        """Enumerate subdomains using various techniques"""
+        subdomains = []
+        
+        # Common subdomain list
+        common_subs = [
+            "www", "mail", "ftp", "localhost", "webmail", "smtp", "pop", "ns1", "webdisk", 
+            "ns2", "cpanel", "whm", "autodiscover", "autoconfig", "m", "imap", "test",
+            "ns", "blog", "pop3", "dev", "www2", "admin", "forum", "news", "vpn",
+            "ns3", "mail2", "new", "mysql", "old", "www1", "email", "img", "www3",
+            "help", "shop", "owa", "en", "start", "sms", "api", "exchange", "www4"
+        ]
+        
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=self.console
+            ) as progress:
+                
+                task = progress.add_task(f"Testing {len(common_subs)} common subdomains...", total=len(common_subs))
+                
+                # Use async DNS resolution if available
+                if HAS_ENHANCED_LIBS and self.config.async_dns_enabled:
+                    subdomains = await self._async_subdomain_enum(common_subs, progress, task)
+                else:
+                    subdomains = await self._sync_subdomain_enum(common_subs, progress, task)
+            
+            # Save subdomain results
+            if subdomains:
+                subdomain_content = '\n'.join(subdomains)
+                await self.safe_file_operation("write", 
+                    f"{self.config.output_dir}/dns/subdomains.txt", subdomain_content)
+                
+        except Exception as e:
+            self.scan_result.add_warning(f"Subdomain enumeration failed: {e}")
+        
+        return subdomains
+    
+    async def _async_subdomain_enum(self, subdomains: List[str], progress, task) -> List[str]:
+        """Async subdomain enumeration using dnspython"""
+        found_subdomains = []
+        
+        try:
+            import dns.resolver
+            resolver = dns.resolver.Resolver()
+            resolver.nameservers = self.config.dns_servers
+            resolver.timeout = 2
+            resolver.lifetime = 5
+            
+            semaphore = asyncio.Semaphore(self.config.threads)
+            
+            async def check_subdomain(subdomain):
+                async with semaphore:
+                    try:
+                        full_domain = f"{subdomain}.{self.config.target}"
+                        
+                        # Try A record
+                        try:
+                            answers = resolver.resolve(full_domain, 'A')
+                            if answers:
+                                return full_domain
+                        except:
+                            pass
+                            
+                        # Try CNAME record
+                        try:
+                            answers = resolver.resolve(full_domain, 'CNAME')
+                            if answers:
+                                return full_domain
+                        except:
+                            pass
+                    except:
+                        pass
+                    return None
+            
+            # Create tasks for all subdomains
+            tasks = [check_subdomain(sub) for sub in subdomains]
+            
+            # Process tasks in batches to avoid overwhelming the DNS server
+            batch_size = min(20, self.config.threads)
+            for i in range(0, len(tasks), batch_size):
+                batch = tasks[i:i + batch_size]
+                results = await asyncio.gather(*batch, return_exceptions=True)
+                
+                for result in results:
+                    if result and isinstance(result, str):
+                        found_subdomains.append(result)
+                
+                progress.update(task, advance=len(batch))
+                
+                # Rate limiting
+                if self.config.rate_limiting:
+                    await asyncio.sleep(0.1)
+        
+        except ImportError:
+            # Fall back to sync method if dnspython is not available
+            found_subdomains = await self._sync_subdomain_enum(subdomains, progress, task)
+        except Exception as e:
+            self.scan_result.add_warning(f"Async subdomain enumeration failed: {e}")
+        
+        return found_subdomains
+    
+    async def _sync_subdomain_enum(self, subdomains: List[str], progress, task) -> List[str]:
+        """Synchronous subdomain enumeration using dig"""
+        found_subdomains = []
+        
+        for subdomain in subdomains:
+            try:
+                full_domain = f"{subdomain}.{self.config.target}"
+                cmd = ["dig", "+short", "A", full_domain]
+                
+                returncode, stdout, stderr = await self.safe_command_execution(cmd, timeout=5)
+                
+                if returncode == 0 and stdout.strip():
+                    found_subdomains.append(full_domain)
+                
+                progress.update(task, advance=1)
+                
+                # Rate limiting for stealth mode
+                if self.config.stealth_mode:
+                    await asyncio.sleep(0.5)
+                    
+            except Exception as e:
+                self.scan_result.add_warning(f"Subdomain check failed for {subdomain}: {e}")
+        
+        return found_subdomains
+    
+    async def _detect_wildcards(self) -> List[str]:
+        """Detect DNS wildcard records"""
+        wildcards = []
+        
+        try:
+            # Test random subdomains to detect wildcards
+            random_subs = [f"random-{uuid.uuid4().hex[:8]}" for _ in range(3)]
+            
+            for random_sub in random_subs:
+                try:
+                    full_domain = f"{random_sub}.{self.config.target}"
+                    cmd = ["dig", "+short", "A", full_domain]
+                    
+                    returncode, stdout, stderr = await self.safe_command_execution(cmd, timeout=5)
+                    
+                    if returncode == 0 and stdout.strip():
+                        wildcards.append(stdout.strip())
+                        
+                except Exception as e:
+                    self.scan_result.add_warning(f"Wildcard detection failed for {random_sub}: {e}")
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Wildcard detection failed: {e}")
+        
+        return wildcards
+    
+    async def _check_dns_security(self) -> Dict[str, Any]:
+        """Check DNS security configurations"""
+        security_info = {
+            "dnssec_enabled": False,
+            "spf_record": None,
+            "dmarc_record": None,
+            "dkim_records": [],
+            "caa_records": []
+        }
+        
+        try:
+            # Check DNSSEC
+            cmd = ["dig", "+dnssec", "SOA", self.config.target]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd)
+            if returncode == 0 and "ad" in stdout.lower():
+                security_info["dnssec_enabled"] = True
+            
+            # Check SPF record
+            if "TXT" in self.results.get("records", {}):
+                for txt_record in self.results["records"]["TXT"]:
+                    if "v=spf1" in txt_record.lower():
+                        security_info["spf_record"] = txt_record
+                        break
+            
+            # Check DMARC record
+            cmd = ["dig", "+short", "TXT", f"_dmarc.{self.config.target}"]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd)
+            if returncode == 0 and stdout.strip():
+                security_info["dmarc_record"] = stdout.strip()
+            
+            # Check CAA records
+            if "CAA" in self.results.get("records", {}):
+                security_info["caa_records"] = self.results["records"]["CAA"]
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"DNS security check failed: {e}")
+        
+        return security_info
 
 class WhoisScanner(Scanner):
     """WHOIS information gathering"""
@@ -617,32 +845,43 @@ class WhoisScanner(Scanner):
         return whois_results
 
 class PortScanner(Scanner):
-    """Network port scanning with Nmap"""
+    """Enhanced network port scanning with advanced Nmap integration"""
     
     async def run(self) -> Dict[str, Any]:
-        """Perform port scanning"""
-        self.console.print("[cyan]🔍 Starting port scanning...[/cyan]")
+        """Perform comprehensive port scanning"""
+        self.console.print("[cyan]🔍 Starting enhanced port scanning...[/cyan]")
         
         port_results = {
             "open_ports": [],
             "services": {},
             "tcp_scan": None,
-            "udp_scan": None
+            "udp_scan": None,
+            "service_fingerprints": {},
+            "os_detection": {},
+            "vulnerabilities": [],
+            "firewalls_detected": [],
+            "scan_statistics": {}
         }
         
         try:
             # Create output directory
             os.makedirs(f"{self.config.output_dir}/nmap", exist_ok=True)
             
-            # Determine Nmap timing
+            # Enhanced Nmap timing configuration
             timing_map = {
                 "slow": "-T1",
                 "normal": "-T3", 
-                "fast": "-T4"
+                "fast": "-T4",
+                "aggressive": "-T5"
             }
             timing = timing_map.get(self.config.timing, "-T3")
             if self.config.stealth_mode:
                 timing = "-T1"
+            
+            # Additional stealth options
+            stealth_options = []
+            if self.config.stealth_mode:
+                stealth_options.extend(["-f", "-D RND:10", "--randomize-hosts"])
             
             with Progress(
                 SpinnerColumn(),
@@ -652,93 +891,237 @@ class PortScanner(Scanner):
                 console=self.console
             ) as progress:
                 
-                # Quick TCP scan
-                task1 = progress.add_task("Quick TCP port scan (top 1000)...", total=100)
+                # Phase 1: Host discovery
+                discovery_task = progress.add_task("Host discovery...", total=100)
+                host_up = await self._host_discovery(stealth_options, timing)
+                progress.update(discovery_task, completed=100)
                 
-                cmd = [
-                    "nmap", timing, "--top-ports", "1000", "--open",
-                    "-oN", f"{self.config.output_dir}/nmap/quick_scan.txt",
-                    "-oX", f"{self.config.output_dir}/nmap/quick_scan.xml",
-                    self.config.target
-                ]
+                if not host_up:
+                    self.console.print("[yellow]⚠️  Host appears to be down or filtered[/yellow]")
+                    port_results["scan_statistics"]["host_status"] = "down"
+                    return port_results
                 
-                result = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+                port_results["scan_statistics"]["host_status"] = "up"
                 
-                stdout, stderr = await result.communicate()
-                progress.update(task1, completed=100)
+                # Phase 2: Quick TCP scan
+                tcp_task = progress.add_task("TCP port scan (top ports)...", total=100)
                 
-                if result.returncode == 0:
+                # Determine port range based on scan profile
+                port_range = "1000" if self.config.scan_profile in ["quick", "stealth"] else "5000"
+                if self.config.scan_profile == "aggressive":
+                    port_range = "65535"
+                
+                tcp_cmd = [
+                    "nmap", timing, f"--top-ports", port_range, "--open",
+                    "-oN", f"{self.config.output_dir}/nmap/tcp_scan.txt",
+                    "-oX", f"{self.config.output_dir}/nmap/tcp_scan.xml",
+                    "-oG", f"{self.config.output_dir}/nmap/tcp_scan.gnmap"
+                ] + stealth_options + [self.config.target]
+                
+                returncode, stdout, stderr = await self.safe_command_execution(tcp_cmd)
+                progress.update(tcp_task, completed=100)
+                
+                if returncode == 0:
                     port_results["tcp_scan"] = "completed"
-                    # Parse open ports from nmap output
-                    await self._parse_nmap_output(f"{self.config.output_dir}/nmap/quick_scan.txt", port_results)
+                    await self._parse_nmap_output(f"{self.config.output_dir}/nmap/tcp_scan.txt", port_results)
+                    await self._parse_nmap_xml(f"{self.config.output_dir}/nmap/tcp_scan.xml", port_results)
+                else:
+                    self.scan_result.add_error(f"TCP scan failed: {stderr}")
                 
-                # Service detection on open ports
+                # Phase 3: Service version detection
                 if port_results["open_ports"]:
-                    task2 = progress.add_task("Service version detection...", total=100)
+                    service_task = progress.add_task("Service version detection...", total=100)
                     
                     ports_str = ",".join([str(p) for p in port_results["open_ports"]])
-                    cmd = [
+                    service_cmd = [
                         "nmap", "-sV", "-sC", f"--script={self.config.nmap_scripts}",
                         timing, f"-p{ports_str}",
                         "-oN", f"{self.config.output_dir}/nmap/service_scan.txt",
-                        "-oX", f"{self.config.output_dir}/nmap/service_scan.xml",
-                        self.config.target
-                    ]
+                        "-oX", f"{self.config.output_dir}/nmap/service_scan.xml"
+                    ] + stealth_options + [self.config.target]
                     
-                    result = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
+                    returncode, stdout, stderr = await self.safe_command_execution(service_cmd)
                     
-                    await result.communicate()
-                    progress.update(task2, completed=100)
+                    if returncode == 0:
+                        await self._parse_service_info(f"{self.config.output_dir}/nmap/service_scan.xml", port_results)
+                    
+                    progress.update(service_task, completed=100)
                 
-                # UDP scan (if not in stealth mode)
-                if not self.config.stealth_mode:
-                    task3 = progress.add_task("UDP port scan (top 100)...", total=100)
+                # Phase 4: OS Detection (if not in stealth mode)
+                if not self.config.stealth_mode and port_results["open_ports"]:
+                    os_task = progress.add_task("OS detection...", total=100)
                     
-                    cmd = [
-                        "nmap", "-sU", timing, "--top-ports", "100", "--open",
-                        "-oN", f"{self.config.output_dir}/nmap/udp_scan.txt",
-                        "-oX", f"{self.config.output_dir}/nmap/udp_scan.xml",
+                    os_cmd = [
+                        "nmap", "-O", "--osscan-guess",
+                        timing, "-p", ",".join([str(p) for p in port_results["open_ports"][:10]]),
+                        "-oN", f"{self.config.output_dir}/nmap/os_scan.txt",
+                        "-oX", f"{self.config.output_dir}/nmap/os_scan.xml",
                         self.config.target
                     ]
                     
-                    result = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
+                    returncode, stdout, stderr = await self.safe_command_execution(os_cmd)
                     
-                    await result.communicate()
-                    progress.update(task3, completed=100)
+                    if returncode == 0:
+                        port_results["os_detection"] = await self._parse_os_detection(
+                            f"{self.config.output_dir}/nmap/os_scan.xml")
                     
-                    if result.returncode == 0:
+                    progress.update(os_task, completed=100)
+                
+                # Phase 5: UDP scan (limited in stealth mode)
+                if self.config.scan_profile != "quick":
+                    udp_task = progress.add_task("UDP port scan...", total=100)
+                    
+                    udp_ports = "100" if self.config.stealth_mode else "1000"
+                    udp_cmd = [
+                        "nmap", "-sU", timing, f"--top-ports", udp_ports, "--open",
+                        "-oN", f"{self.config.output_dir}/nmap/udp_scan.txt",
+                        "-oX", f"{self.config.output_dir}/nmap/udp_scan.xml"
+                    ] + stealth_options + [self.config.target]
+                    
+                    returncode, stdout, stderr = await self.safe_command_execution(udp_cmd, timeout=300)
+                    
+                    if returncode == 0:
                         port_results["udp_scan"] = "completed"
+                        await self._parse_udp_results(f"{self.config.output_dir}/nmap/udp_scan.xml", port_results)
+                    
+                    progress.update(udp_task, completed=100)
+                
+                # Phase 6: Firewall/IDS detection
+                if self.config.scan_profile == "comprehensive":
+                    fw_task = progress.add_task("Firewall detection...", total=100)
+                    port_results["firewalls_detected"] = await self._detect_firewalls()
+                    progress.update(fw_task, completed=100)
         
         except Exception as e:
-            logging.error(f"Port scanning failed: {e}")
+            self.scan_result.add_error(f"Port scanning failed: {e}")
+        
+        # Generate scan statistics
+        port_results["scan_statistics"]["total_open_ports"] = len(port_results["open_ports"])
+        port_results["scan_statistics"]["scan_duration"] = self.scan_result.duration()
         
         self.results = port_results
         return port_results
     
-    async def _parse_nmap_output(self, file_path: str, results: Dict[str, Any]) -> None:
-        """Parse Nmap output to extract open ports"""
+    async def _host_discovery(self, stealth_options: List[str], timing: str) -> bool:
+        """Perform host discovery to check if target is up"""
         try:
-            with open(file_path, 'r') as f:
-                content = f.read()
-                import re
-                # Extract open ports from nmap output
-                port_pattern = r'(\d+)/tcp\s+open'
-                matches = re.findall(port_pattern, content)
-                results["open_ports"] = [int(port) for port in matches]
+            cmd = ["nmap", "-sn", timing] + stealth_options + [self.config.target]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd, timeout=30)
+            
+            if returncode == 0:
+                return "Host is up" in stdout or "1 host up" in stdout
+            return False
+            
         except Exception as e:
-            logging.warning(f"Could not parse nmap output: {e}")
+            self.scan_result.add_warning(f"Host discovery failed: {e}")
+            return True  # Assume host is up and continue
+    
+    async def _parse_nmap_output(self, file_path: str, results: Dict[str, Any]) -> None:
+        """Parse Nmap text output to extract open ports"""
+        try:
+            content = await self.safe_file_operation("read", file_path)
+            if content:
+                # Extract open ports from nmap output
+                port_pattern = r'(\d+)/(tcp|udp)\s+open'
+                matches = re.findall(port_pattern, content)
+                results["open_ports"] = [int(port) for port, protocol in matches if protocol == "tcp"]
+                
+        except Exception as e:
+            self.scan_result.add_warning(f"Could not parse nmap text output: {e}")
+    
+    async def _parse_nmap_xml(self, file_path: str, results: Dict[str, Any]) -> None:
+        """Parse Nmap XML output for detailed information"""
+        try:
+            content = await self.safe_file_operation("read", file_path)
+            if content:
+                # Basic XML parsing for port information
+                port_pattern = r'<port protocol="tcp" portid="(\d+)"><state state="open"'
+                matches = re.findall(port_pattern, content)
+                xml_ports = [int(port) for port in matches]
+                
+                # Merge with existing results
+                all_ports = list(set(results.get("open_ports", []) + xml_ports))
+                results["open_ports"] = sorted(all_ports)
+                
+        except Exception as e:
+            self.scan_result.add_warning(f"Could not parse nmap XML output: {e}")
+    
+    async def _parse_service_info(self, file_path: str, results: Dict[str, Any]) -> None:
+        """Parse service version information from XML"""
+        try:
+            content = await self.safe_file_operation("read", file_path)
+            if content:
+                # Extract service information using regex
+                service_pattern = r'<port protocol="tcp" portid="(\d+)">.*?<service name="([^"]*)".*?version="([^"]*)".*?</port>'
+                matches = re.findall(service_pattern, content, re.DOTALL)
+                
+                for port, service, version in matches:
+                    results["services"][port] = {
+                        "service": service,
+                        "version": version.strip() if version else "unknown"
+                    }
+                
+        except Exception as e:
+            self.scan_result.add_warning(f"Could not parse service information: {e}")
+    
+    async def _parse_os_detection(self, file_path: str) -> Dict[str, Any]:
+        """Parse OS detection results"""
+        os_info = {"detected": False, "os_matches": [], "accuracy": 0}
+        
+        try:
+            content = await self.safe_file_operation("read", file_path)
+            if content:
+                # Basic OS detection parsing
+                os_pattern = r'<osmatch name="([^"]*)" accuracy="(\d+)"'
+                matches = re.findall(os_pattern, content)
+                
+                if matches:
+                    os_info["detected"] = True
+                    os_info["os_matches"] = [{"name": name, "accuracy": int(acc)} for name, acc in matches[:3]]
+                    os_info["accuracy"] = max([int(acc) for _, acc in matches])
+                
+        except Exception as e:
+            self.scan_result.add_warning(f"Could not parse OS detection: {e}")
+        
+        return os_info
+    
+    async def _parse_udp_results(self, file_path: str, results: Dict[str, Any]) -> None:
+        """Parse UDP scan results"""
+        try:
+            content = await self.safe_file_operation("read", file_path)
+            if content:
+                # Extract UDP ports
+                udp_pattern = r'<port protocol="udp" portid="(\d+)"><state state="open"'
+                matches = re.findall(udp_pattern, content)
+                results["udp_ports"] = [int(port) for port in matches]
+                
+        except Exception as e:
+            self.scan_result.add_warning(f"Could not parse UDP results: {e}")
+    
+    async def _detect_firewalls(self) -> List[str]:
+        """Detect potential firewalls or IDS systems"""
+        firewalls = []
+        
+        try:
+            # Use nmap firewall detection scripts
+            cmd = [
+                "nmap", "--script", "firewalk,firewall-bypass",
+                "-p", "21,22,23,25,53,80,110,443,993,995",
+                self.config.target
+            ]
+            
+            returncode, stdout, stderr = await self.safe_command_execution(cmd, timeout=60)
+            
+            if returncode == 0:
+                if "firewall" in stdout.lower():
+                    firewalls.append("Firewall detected")
+                if "filtered" in stdout.lower():
+                    firewalls.append("Port filtering detected")
+            
+        except Exception as e:
+            self.scan_result.add_warning(f"Firewall detection failed: {e}")
+        
+        return firewalls
 
 class WebScanner(Scanner):
     """Web application scanning and directory enumeration"""
@@ -989,23 +1372,28 @@ class VulnerabilityScanner(Scanner):
         return vuln_results
 
 class SSLScanner(Scanner):
-
-    """SSL/TLS security analysis"""
+    """Enhanced SSL/TLS security analysis"""
     
     async def run(self) -> Dict[str, Any]:
-        """Perform SSL/TLS analysis"""
-        self.console.print("[cyan]🔍 Starting SSL/TLS analysis...[/cyan]")
+        """Perform comprehensive SSL/TLS analysis"""
+        self.console.print("[cyan]🔍 Starting enhanced SSL/TLS analysis...[/cyan]")
         
         ssl_results = {
             "certificates": {},
             "vulnerabilities": [],
             "cipher_suites": {},
-            "protocols": {}
+            "protocols": {},
+            "certificate_details": {},
+            "security_issues": [],
+            "recommendations": []
         }
         
         try:
-            # SSL ports to check
-            ssl_ports = [443, 8443, 993, 995, 465]
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/ssl", exist_ok=True)
+            
+            # Common SSL ports to check
+            ssl_ports = [443, 8443, 993, 995, 465, 587, 636, 989, 990]
             
             with Progress(
                 SpinnerColumn(),
@@ -1015,37 +1403,906 @@ class SSLScanner(Scanner):
                 console=self.console
             ) as progress:
                 
+                task = progress.add_task("Analyzing SSL/TLS configurations...", total=len(ssl_ports))
+                
                 for port in ssl_ports:
-                    task = progress.add_task(f"SSL analysis on port {port}...", total=100)
-                    
                     try:
-                        # Check if port is open with a simple connection test
+                        # Enhanced SSL analysis using nmap scripts
                         cmd = [
-                            "nmap", "--script", "ssl-cert,ssl-enum-ciphers",
-                            "-p", str(port), self.config.target
+                            "nmap", "--script", 
+                            "ssl-cert,ssl-enum-ciphers,ssl-heartbleed,ssl-poodle,ssl-ccs-injection",
+                            "-p", str(port), self.config.target,
+                            "-oN", f"{self.config.output_dir}/ssl/ssl_scan_{port}.txt"
                         ]
                         
-                        result = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
+                        returncode, stdout, stderr = await self.safe_command_execution(cmd)
                         
-                        stdout, stderr = await result.communicate()
-                        
-                        if result.returncode == 0 and "open" in stdout.decode():
-                            ssl_results["certificates"][port] = stdout.decode()
+                        if returncode == 0 and "open" in stdout:
+                            ssl_results["certificates"][port] = await self._parse_ssl_output(stdout)
+                            
+                            # Additional certificate validation
+                            cert_details = await self._get_certificate_details(port)
+                            if cert_details:
+                                ssl_results["certificate_details"][port] = cert_details
                         
                     except Exception as e:
-                        logging.warning(f"SSL scan failed for port {port}: {e}")
+                        self.scan_result.add_warning(f"SSL scan failed for port {port}: {e}")
                     
-                    progress.update(task, completed=100)
+                    progress.update(task, advance=1)
+                
+                # Generate security recommendations
+                ssl_results["recommendations"] = self._generate_ssl_recommendations(ssl_results)
         
         except Exception as e:
-            logging.error(f"SSL scanning failed: {e}")
+            self.scan_result.add_error(f"SSL scanning failed: {e}")
         
         self.results = ssl_results
         return ssl_results
+    
+    async def _parse_ssl_output(self, output: str) -> Dict[str, Any]:
+        """Parse SSL nmap script output"""
+        ssl_info = {"protocols": [], "ciphers": [], "vulnerabilities": []}
+        
+        try:
+            lines = output.split('\n')
+            for line in lines:
+                line = line.strip()
+                if "TLSv" in line or "SSLv" in line:
+                    ssl_info["protocols"].append(line)
+                elif "cipher" in line.lower():
+                    ssl_info["ciphers"].append(line)
+                elif any(vuln in line.lower() for vuln in ["vulnerable", "heartbleed", "poodle"]):
+                    ssl_info["vulnerabilities"].append(line)
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"SSL output parsing failed: {e}")
+        
+        return ssl_info
+    
+    async def _get_certificate_details(self, port: int) -> Dict[str, Any]:
+        """Get detailed certificate information"""
+        cert_details = {}
+        
+        try:
+            # Use openssl to get certificate details
+            cmd = ["openssl", "s_client", "-connect", f"{self.config.target}:{port}", "-servername", self.config.target]
+            
+            returncode, stdout, stderr = await self.safe_command_execution(cmd, timeout=10)
+            
+            if returncode == 0 or stdout:  # openssl s_client often returns non-zero even on success
+                # Parse certificate information
+                if "BEGIN CERTIFICATE" in stdout:
+                    cert_details["has_certificate"] = True
+                    
+                    # Extract basic certificate info
+                    if "subject=" in stdout:
+                        subject_match = re.search(r'subject=(.+)', stdout)
+                        if subject_match:
+                            cert_details["subject"] = subject_match.group(1).strip()
+                    
+                    if "issuer=" in stdout:
+                        issuer_match = re.search(r'issuer=(.+)', stdout)
+                        if issuer_match:
+                            cert_details["issuer"] = issuer_match.group(1).strip()
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Certificate details extraction failed for port {port}: {e}")
+        
+        return cert_details
+    
+    def _generate_ssl_recommendations(self, ssl_results: Dict[str, Any]) -> List[str]:
+        """Generate SSL security recommendations"""
+        recommendations = []
+        
+        # Check for common SSL issues
+        for port, cert_info in ssl_results.get("certificates", {}).items():
+            if cert_info.get("vulnerabilities"):
+                recommendations.append(f"Port {port}: Address SSL vulnerabilities detected")
+            
+            if any("SSLv" in protocol for protocol in cert_info.get("protocols", [])):
+                recommendations.append(f"Port {port}: Disable legacy SSL protocols")
+                
+            if any("TLS_RSA" in cipher for cipher in cert_info.get("ciphers", [])):
+                recommendations.append(f"Port {port}: Consider disabling RSA key exchange ciphers")
+        
+        # General recommendations
+        if ssl_results.get("certificates"):
+            recommendations.extend([
+                "Regularly update SSL/TLS certificates",
+                "Implement HTTP Strict Transport Security (HSTS)",
+                "Use certificate pinning where appropriate",
+                "Monitor certificate expiration dates"
+            ])
+        
+        return recommendations
+
+class IntelligenceGatherer(Scanner):
+    """Advanced intelligence gathering and OSINT capabilities"""
+    
+    async def run(self) -> Dict[str, Any]:
+        """Perform comprehensive intelligence gathering"""
+        if not self.config.intelligence_enabled:
+            return {}
+            
+        self.console.print("[cyan]🔍 Starting intelligence gathering...[/cyan]")
+        
+        intel_results = {
+            "domain_intelligence": {},
+            "threat_intelligence": {},
+            "social_media": {},
+            "breach_data": {},
+            "related_domains": [],
+            "technologies": {},
+            "emails": [],
+            "ip_intelligence": {},
+            "geolocation": {}
+        }
+        
+        try:
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/intelligence", exist_ok=True)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.console
+            ) as progress:
+                
+                total_tasks = 5
+                task = progress.add_task("Gathering intelligence...", total=total_tasks)
+                
+                # Domain intelligence
+                progress.update(task, description="Gathering domain intelligence...")
+                intel_results["domain_intelligence"] = await self._gather_domain_intel()
+                progress.update(task, advance=1)
+                
+                # Technology fingerprinting
+                progress.update(task, description="Analyzing technologies...")
+                intel_results["technologies"] = await self._analyze_technologies()
+                progress.update(task, advance=1)
+                
+                # Related domains and infrastructure
+                progress.update(task, description="Finding related infrastructure...")
+                intel_results["related_domains"] = await self._find_related_domains()
+                progress.update(task, advance=1)
+                
+                # Email harvesting
+                progress.update(task, description="Harvesting email addresses...")
+                intel_results["emails"] = await self._harvest_emails()
+                progress.update(task, advance=1)
+                
+                # IP intelligence and geolocation
+                progress.update(task, description="Analyzing IP intelligence...")
+                intel_results["ip_intelligence"] = await self._gather_ip_intel()
+                intel_results["geolocation"] = await self._get_geolocation()
+                progress.update(task, advance=1)
+                
+                # Save intelligence report
+                await self._save_intelligence_report(intel_results)
+        
+        except Exception as e:
+            self.scan_result.add_error(f"Intelligence gathering failed: {e}")
+        
+        self.results = intel_results
+        return intel_results
+    
+    async def _gather_domain_intel(self) -> Dict[str, Any]:
+        """Gather domain intelligence"""
+        domain_intel = {"creation_date": None, "registrar": None, "nameservers": [], "status": []}
+        
+        try:
+            # Enhanced WHOIS analysis
+            cmd = ["whois", self.config.target]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd)
+            
+            if returncode == 0 and stdout:
+                whois_data = stdout.lower()
+                
+                # Extract creation date
+                creation_patterns = [r'creation date:\s*(.+)', r'created:\s*(.+)', r'domain created:\s*(.+)']
+                for pattern in creation_patterns:
+                    match = re.search(pattern, whois_data)
+                    if match:
+                        domain_intel["creation_date"] = match.group(1).strip()
+                        break
+                
+                # Extract registrar
+                registrar_match = re.search(r'registrar:\s*(.+)', whois_data)
+                if registrar_match:
+                    domain_intel["registrar"] = registrar_match.group(1).strip()
+                
+                # Extract nameservers
+                ns_matches = re.findall(r'name server:\s*(.+)', whois_data)
+                domain_intel["nameservers"] = [ns.strip() for ns in ns_matches]
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Domain intelligence gathering failed: {e}")
+        
+        return domain_intel
+    
+    async def _analyze_technologies(self) -> Dict[str, Any]:
+        """Analyze web technologies in use"""
+        tech_info = {"web_servers": [], "frameworks": [], "cms": [], "analytics": []}
+        
+        try:
+            # Use whatweb for technology detection
+            cmd = ["whatweb", "--color=never", "--log-brief", "-", f"http://{self.config.target}"]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd)
+            
+            if returncode == 0 and stdout:
+                # Parse whatweb output
+                if "apache" in stdout.lower():
+                    tech_info["web_servers"].append("Apache")
+                if "nginx" in stdout.lower():
+                    tech_info["web_servers"].append("Nginx")
+                if "iis" in stdout.lower():
+                    tech_info["web_servers"].append("IIS")
+                    
+                # Look for common frameworks
+                frameworks = ["wordpress", "drupal", "joomla", "django", "flask", "rails"]
+                for framework in frameworks:
+                    if framework in stdout.lower():
+                        tech_info["frameworks"].append(framework.capitalize())
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Technology analysis failed: {e}")
+        
+        return tech_info
+    
+    async def _find_related_domains(self) -> List[str]:
+        """Find related domains and infrastructure"""
+        related_domains = []
+        
+        try:
+            # Look for domains on same IP
+            cmd = ["dig", "+short", "A", self.config.target]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd)
+            
+            if returncode == 0 and stdout.strip():
+                ip_address = stdout.strip().split('\n')[0]
+                
+                # Reverse DNS lookup
+                cmd = ["dig", "+short", "-x", ip_address]
+                returncode, stdout, stderr = await self.safe_command_execution(cmd)
+                
+                if returncode == 0 and stdout.strip():
+                    reverse_domains = stdout.strip().split('\n')
+                    related_domains.extend([d.rstrip('.') for d in reverse_domains if d != self.config.target])
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Related domain discovery failed: {e}")
+        
+        return related_domains
+    
+    async def _harvest_emails(self) -> List[str]:
+        """Harvest email addresses from public sources"""
+        emails = []
+        
+        try:
+            # Simple email pattern matching from web content
+            if HAS_ENHANCED_LIBS:
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        async with session.get(f"http://{self.config.target}", timeout=10) as response:
+                            if response.status == 200:
+                                content = await response.text()
+                                email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                                found_emails = re.findall(email_pattern, content)
+                                emails.extend(list(set(found_emails)))  # Remove duplicates
+                    except:
+                        pass  # Fail silently for web scraping
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Email harvesting failed: {e}")
+        
+        return emails
+    
+    async def _gather_ip_intel(self) -> Dict[str, Any]:
+        """Gather IP address intelligence"""
+        ip_intel = {"ip_address": None, "asn": None, "organization": None, "country": None}
+        
+        try:
+            # Get IP address
+            cmd = ["dig", "+short", "A", self.config.target]
+            returncode, stdout, stderr = await self.safe_command_execution(cmd)
+            
+            if returncode == 0 and stdout.strip():
+                ip_address = stdout.strip().split('\n')[0]
+                ip_intel["ip_address"] = ip_address
+                
+                # Get ASN information using whois
+                cmd = ["whois", ip_address]
+                returncode, stdout, stderr = await self.safe_command_execution(cmd)
+                
+                if returncode == 0 and stdout:
+                    whois_data = stdout.lower()
+                    
+                    # Extract ASN
+                    asn_match = re.search(r'as(\d+)', whois_data)
+                    if asn_match:
+                        ip_intel["asn"] = f"AS{asn_match.group(1)}"
+                    
+                    # Extract organization
+                    org_patterns = [r'orgname:\s*(.+)', r'organization:\s*(.+)', r'org:\s*(.+)']
+                    for pattern in org_patterns:
+                        match = re.search(pattern, whois_data)
+                        if match:
+                            ip_intel["organization"] = match.group(1).strip()
+                            break
+                    
+                    # Extract country
+                    country_match = re.search(r'country:\s*(.+)', whois_data)
+                    if country_match:
+                        ip_intel["country"] = country_match.group(1).strip()
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"IP intelligence gathering failed: {e}")
+        
+        return ip_intel
+    
+    async def _get_geolocation(self) -> Dict[str, Any]:
+        """Get geolocation information"""
+        geo_info = {"country": None, "region": None, "city": None, "timezone": None}
+        
+        try:
+            # This would typically use a geolocation API
+            # For now, we'll extract what we can from WHOIS data
+            if self.results.get("ip_intelligence", {}).get("country"):
+                geo_info["country"] = self.results["ip_intelligence"]["country"]
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"Geolocation lookup failed: {e}")
+        
+        return geo_info
+    
+    async def _save_intelligence_report(self, intel_results: Dict[str, Any]) -> None:
+        """Save intelligence gathering report"""
+        try:
+            report_content = json.dumps(intel_results, indent=2)
+            await self.safe_file_operation("write", 
+                f"{self.config.output_dir}/intelligence/intelligence_report.json", report_content)
+            
+            # Create human-readable summary
+            summary = self._create_intelligence_summary(intel_results)
+            await self.safe_file_operation("write", 
+                f"{self.config.output_dir}/intelligence/intelligence_summary.txt", summary)
+        
+        except Exception as e:
+            self.scan_result.add_error(f"Failed to save intelligence report: {e}")
+    
+    def _create_intelligence_summary(self, intel_results: Dict[str, Any]) -> str:
+        """Create human-readable intelligence summary"""
+        summary = f"Intelligence Gathering Summary for {self.config.target}\n"
+        summary += "=" * 60 + "\n\n"
+        
+        # Domain intelligence
+        domain_intel = intel_results.get("domain_intelligence", {})
+        if domain_intel:
+            summary += "Domain Intelligence:\n"
+            if domain_intel.get("creation_date"):
+                summary += f"  Creation Date: {domain_intel['creation_date']}\n"
+            if domain_intel.get("registrar"):
+                summary += f"  Registrar: {domain_intel['registrar']}\n"
+            summary += "\n"
+        
+        # IP intelligence
+        ip_intel = intel_results.get("ip_intelligence", {})
+        if ip_intel:
+            summary += "IP Intelligence:\n"
+            if ip_intel.get("ip_address"):
+                summary += f"  IP Address: {ip_intel['ip_address']}\n"
+            if ip_intel.get("organization"):
+                summary += f"  Organization: {ip_intel['organization']}\n"
+            if ip_intel.get("country"):
+                summary += f"  Country: {ip_intel['country']}\n"
+            summary += "\n"
+        
+        # Technologies
+        technologies = intel_results.get("technologies", {})
+        if any(technologies.values()):
+            summary += "Technologies Detected:\n"
+            for tech_type, tech_list in technologies.items():
+                if tech_list:
+                    summary += f"  {tech_type.title()}: {', '.join(tech_list)}\n"
+            summary += "\n"
+        
+        # Related domains
+        related_domains = intel_results.get("related_domains", [])
+        if related_domains:
+            summary += f"Related Domains ({len(related_domains)}):\n"
+            for domain in related_domains[:10]:  # Limit to first 10
+                summary += f"  - {domain}\n"
+            summary += "\n"
+        
+        # Email addresses
+        emails = intel_results.get("emails", [])
+        if emails:
+            summary += f"Email Addresses Found ({len(emails)}):\n"
+            for email in emails[:10]:  # Limit to first 10
+                summary += f"  - {email}\n"
+            summary += "\n"
+        
+        return summary
+
+class APIDiscoveryScanner(Scanner):
+    """API endpoint discovery and analysis"""
+    
+    async def run(self) -> Dict[str, Any]:
+        """Perform API discovery scanning"""
+        if not self.config.api_discovery_enabled:
+            return {}
+            
+        self.console.print("[cyan]🔍 Starting API discovery...[/cyan]")
+        
+        api_results = {
+            "endpoints": [],
+            "api_types": [],
+            "swagger_docs": [],
+            "graphql_endpoints": [],
+            "rest_endpoints": [],
+            "authentication_methods": [],
+            "rate_limiting": {},
+            "security_headers": {}
+        }
+        
+        try:
+            # Create output directory
+            os.makedirs(f"{self.config.output_dir}/api_discovery", exist_ok=True)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.console
+            ) as progress:
+                
+                task = progress.add_task("Discovering API endpoints...", total=100)
+                
+                # Common API paths
+                api_paths = [
+                    "/api", "/api/v1", "/api/v2", "/rest", "/restapi",
+                    "/graphql", "/v1", "/v2", "/swagger", "/docs",
+                    "/api-docs", "/openapi.json", "/swagger.json",
+                    "/api/swagger", "/api/docs", "/documentation"
+                ]
+                
+                progress.update(task, advance=20, description="Testing common API paths...")
+                api_results["endpoints"] = await self._test_api_paths(api_paths)
+                
+                progress.update(task, advance=30, description="Looking for API documentation...")
+                api_results["swagger_docs"] = await self._find_api_docs()
+                
+                progress.update(task, advance=25, description="Testing for GraphQL...")
+                api_results["graphql_endpoints"] = await self._test_graphql()
+                
+                progress.update(task, advance=25, description="Analyzing API security...")
+                api_results["security_headers"] = await self._analyze_api_security()
+                
+                # Save API discovery results
+                await self._save_api_report(api_results)
+        
+        except Exception as e:
+            self.scan_result.add_error(f"API discovery failed: {e}")
+        
+        self.results = api_results
+        return api_results
+    
+    async def _test_api_paths(self, paths: List[str]) -> List[Dict[str, Any]]:
+        """Test common API paths"""
+        found_endpoints = []
+        
+        if not HAS_ENHANCED_LIBS:
+            return found_endpoints
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                for path in paths:
+                    try:
+                        url = f"http://{self.config.target}{path}"
+                        async with session.get(url) as response:
+                            if response.status in [200, 401, 403]:  # Potentially valid endpoints
+                                endpoint_info = {
+                                    "url": url,
+                                    "status": response.status,
+                                    "content_type": response.headers.get("content-type", ""),
+                                    "methods": []
+                                }
+                                
+                                # Test different HTTP methods
+                                for method in ["GET", "POST", "PUT", "DELETE", "OPTIONS"]:
+                                    try:
+                                        async with session.request(method, url) as method_response:
+                                            if method_response.status != 404:
+                                                endpoint_info["methods"].append(method)
+                                    except:
+                                        pass
+                                
+                                found_endpoints.append(endpoint_info)
+                                
+                        # Rate limiting
+                        if self.config.rate_limiting:
+                            await asyncio.sleep(0.1)
+                            
+                    except Exception as e:
+                        self.scan_result.add_warning(f"Failed to test API path {path}: {e}")
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"API path testing failed: {e}")
+        
+        return found_endpoints
+    
+    async def _find_api_docs(self) -> List[str]:
+        """Find API documentation"""
+        docs_found = []
+        
+        doc_paths = [
+            "/swagger-ui", "/swagger-ui/", "/docs", "/documentation",
+            "/api/docs", "/redoc", "/rapidoc", "/openapi.json",
+            "/swagger.json", "/api.json", "/schema.json"
+        ]
+        
+        if not HAS_ENHANCED_LIBS:
+            return docs_found
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                for doc_path in doc_paths:
+                    try:
+                        url = f"http://{self.config.target}{doc_path}"
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                content_type = response.headers.get("content-type", "")
+                                if "json" in content_type or "html" in content_type:
+                                    docs_found.append(url)
+                    except:
+                        pass
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"API documentation discovery failed: {e}")
+        
+        return docs_found
+    
+    async def _test_graphql(self) -> List[str]:
+        """Test for GraphQL endpoints"""
+        graphql_endpoints = []
+        
+        graphql_paths = ["/graphql", "/api/graphql", "/v1/graphql", "/query"]
+        
+        if not HAS_ENHANCED_LIBS:
+            return graphql_endpoints
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                for path in graphql_paths:
+                    try:
+                        url = f"http://{self.config.target}{path}"
+                        
+                        # Test with a simple GraphQL introspection query
+                        graphql_query = {"query": "{ __schema { types { name } } }"}
+                        
+                        async with session.post(url, json=graphql_query) as response:
+                            if response.status == 200:
+                                response_text = await response.text()
+                                if "__schema" in response_text or "types" in response_text:
+                                    graphql_endpoints.append(url)
+                    except:
+                        pass
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"GraphQL testing failed: {e}")
+        
+        return graphql_endpoints
+    
+    async def _analyze_api_security(self) -> Dict[str, Any]:
+        """Analyze API security headers and configurations"""
+        security_info = {
+            "cors_enabled": False,
+            "auth_headers": [],
+            "security_headers": [],
+            "rate_limiting_detected": False
+        }
+        
+        if not HAS_ENHANCED_LIBS:
+            return security_info
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                url = f"http://{self.config.target}/api"
+                
+                try:
+                    async with session.options(url) as response:
+                        headers = response.headers
+                        
+                        # Check CORS
+                        if "access-control-allow-origin" in headers:
+                            security_info["cors_enabled"] = True
+                        
+                        # Check security headers
+                        security_headers = [
+                            "x-content-type-options", "x-frame-options",
+                            "strict-transport-security", "content-security-policy"
+                        ]
+                        
+                        for header in security_headers:
+                            if header in headers:
+                                security_info["security_headers"].append(header)
+                        
+                        # Check authentication headers
+                        auth_headers = ["www-authenticate", "authorization"]
+                        for header in auth_headers:
+                            if header in headers:
+                                security_info["auth_headers"].append(header)
+                
+                except:
+                    pass
+        
+        except Exception as e:
+            self.scan_result.add_warning(f"API security analysis failed: {e}")
+        
+        return security_info
+    
+    async def _save_api_report(self, api_results: Dict[str, Any]) -> None:
+        """Save API discovery report"""
+        try:
+            report_content = json.dumps(api_results, indent=2)
+            await self.safe_file_operation("write", 
+                f"{self.config.output_dir}/api_discovery/api_report.json", report_content)
+            
+            # Create summary
+            summary = self._create_api_summary(api_results)
+            await self.safe_file_operation("write", 
+                f"{self.config.output_dir}/api_discovery/api_summary.txt", summary)
+        
+        except Exception as e:
+            self.scan_result.add_error(f"Failed to save API report: {e}")
+    
+    def _create_api_summary(self, api_results: Dict[str, Any]) -> str:
+        """Create API discovery summary"""
+        summary = f"API Discovery Summary for {self.config.target}\n"
+        summary += "=" * 50 + "\n\n"
+        
+        endpoints = api_results.get("endpoints", [])
+        if endpoints:
+            summary += f"API Endpoints Found ({len(endpoints)}):\n"
+            for endpoint in endpoints:
+                summary += f"  - {endpoint['url']} (Status: {endpoint['status']})\n"
+                if endpoint.get("methods"):
+                    summary += f"    Methods: {', '.join(endpoint['methods'])}\n"
+            summary += "\n"
+        
+        swagger_docs = api_results.get("swagger_docs", [])
+        if swagger_docs:
+            summary += "API Documentation:\n"
+            for doc in swagger_docs:
+                summary += f"  - {doc}\n"
+            summary += "\n"
+        
+        graphql = api_results.get("graphql_endpoints", [])
+        if graphql:
+            summary += "GraphQL Endpoints:\n"
+            for endpoint in graphql:
+                summary += f"  - {endpoint}\n"
+            summary += "\n"
+        
+        return summary
+
+class RiskAnalyzer:
+    """Advanced risk analysis and assessment engine"""
+    
+    def __init__(self, console: Console):
+        self.console = console
+        
+    def analyze_scan_results(self, scan_results: Dict[str, ScanResult]) -> Dict[str, Any]:
+        """Comprehensive risk analysis of all scan results"""
+        self.console.print("[cyan]🔍 Performing risk analysis...[/cyan]")
+        
+        risk_analysis = {
+            "overall_risk_score": 0.0,
+            "risk_level": "unknown",
+            "critical_findings": [],
+            "high_risk_findings": [],
+            "medium_risk_findings": [],
+            "low_risk_findings": [],
+            "recommendations": [],
+            "attack_vectors": [],
+            "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        }
+        
+        try:
+            # Analyze each scanner's results
+            for scanner_name, scan_result in scan_results.items():
+                if scan_result.status == "completed" and scan_result.data:
+                    scanner_risks = self._analyze_scanner_risks(scanner_name, scan_result.data)
+                    self._merge_risk_findings(risk_analysis, scanner_risks)
+            
+            # Calculate overall risk score
+            risk_analysis["overall_risk_score"] = self._calculate_risk_score(risk_analysis)
+            risk_analysis["risk_level"] = self._determine_risk_level(risk_analysis["overall_risk_score"])
+            
+            # Generate recommendations
+            risk_analysis["recommendations"] = self._generate_recommendations(risk_analysis)
+            
+            # Identify attack vectors
+            risk_analysis["attack_vectors"] = self._identify_attack_vectors(scan_results)
+            
+        except Exception as e:
+            logging.error(f"Risk analysis failed: {e}")
+        
+        return risk_analysis
+    
+    def _analyze_scanner_risks(self, scanner_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze risks from specific scanner results"""
+        risks = {"critical": [], "high": [], "medium": [], "low": [], "info": []}
+        
+        if scanner_name == "Ports":
+            open_ports = data.get("open_ports", [])
+            high_risk_ports = [21, 23, 25, 53, 135, 139, 445, 1433, 3389, 5900]
+            for port in open_ports:
+                if port in high_risk_ports:
+                    risks["high"].append(f"High-risk port {port} is open")
+        elif scanner_name == "DNS":
+            if data.get("zone_transfer"):
+                risks["high"].append("DNS zone transfer is enabled")
+        elif scanner_name == "Vulnerabilities":
+            nmap_vulns = data.get("nmap_vulns", [])
+            for vuln in nmap_vulns:
+                risks["medium"].append(f"Vulnerability detected: {vuln}")
+        
+        return risks
+    
+    def _merge_risk_findings(self, risk_analysis: Dict[str, Any], scanner_risks: Dict[str, Any]) -> None:
+        """Merge scanner risks into overall risk analysis"""
+        for severity in ["critical", "high", "medium", "low", "info"]:
+            risk_analysis[f"{severity}_risk_findings"].extend(scanner_risks.get(severity, []))
+            risk_analysis["severity_breakdown"][severity] += len(scanner_risks.get(severity, []))
+    
+    def _calculate_risk_score(self, risk_analysis: Dict[str, Any]) -> float:
+        """Calculate overall risk score (0-10 scale)"""
+        breakdown = risk_analysis["severity_breakdown"]
+        
+        if sum(breakdown.values()) == 0:
+            return 0.0
+        
+        score = (
+            breakdown["critical"] * 10.0 +
+            breakdown["high"] * 7.5 +
+            breakdown["medium"] * 5.0 +
+            breakdown["low"] * 2.5 +
+            breakdown["info"] * 1.0
+        ) / sum(breakdown.values())
+        
+        return min(10.0, score)
+    
+    def _determine_risk_level(self, risk_score: float) -> str:
+        """Determine risk level based on score"""
+        if risk_score >= 8.0:
+            return "critical"
+        elif risk_score >= 6.0:
+            return "high"
+        elif risk_score >= 4.0:
+            return "medium"
+        elif risk_score >= 2.0:
+            return "low"
+        else:
+            return "minimal"
+    
+    def _generate_recommendations(self, risk_analysis: Dict[str, Any]) -> List[str]:
+        """Generate security recommendations"""
+        recommendations = []
+        
+        if risk_analysis["severity_breakdown"]["critical"] > 0:
+            recommendations.append("URGENT: Address critical vulnerabilities immediately")
+        if risk_analysis["severity_breakdown"]["high"] > 0:
+            recommendations.append("High priority: Patch high-severity vulnerabilities")
+        
+        recommendations.extend([
+            "Implement regular security assessments",
+            "Keep all software and systems updated",
+            "Monitor security logs and implement alerting"
+        ])
+        
+        return recommendations
+    
+    def _identify_attack_vectors(self, scan_results: Dict[str, ScanResult]) -> List[str]:
+        """Identify potential attack vectors"""
+        attack_vectors = []
+        
+        if "Ports" in scan_results and scan_results["Ports"].data:
+            open_ports = scan_results["Ports"].data.get("open_ports", [])
+            if 22 in open_ports:
+                attack_vectors.append("SSH brute force attacks")
+            if 80 in open_ports or 443 in open_ports:
+                attack_vectors.append("Web application attacks")
+        
+        return attack_vectors
+
+class ReportGenerator:
+    """Advanced report generation with multiple formats"""
+    
+    def __init__(self, config: BCARConfig, console: Console):
+        self.config = config
+        self.console = console
+        
+    async def generate_comprehensive_report(self, scan_results: Dict[str, ScanResult], risk_analysis: Dict[str, Any]) -> None:
+        """Generate comprehensive security assessment report"""
+        self.console.print("[cyan]📊 Generating comprehensive report...[/cyan]")
+        
+        try:
+            # Create reports directory
+            os.makedirs(f"{self.config.output_dir}/reports", exist_ok=True)
+            
+            # Generate different report formats
+            if self.config.output_format in ["json", "both"]:
+                await self._generate_json_report(scan_results, risk_analysis)
+            
+            if self.config.output_format in ["txt", "both"]:
+                await self._generate_text_report(scan_results, risk_analysis)
+            
+            if self.config.executive_summary:
+                await self._generate_executive_summary(risk_analysis)
+            
+            self.console.print("[green]✓ Reports generated successfully[/green]")
+            
+        except Exception as e:
+            logging.error(f"Report generation failed: {e}")
+    
+    async def _generate_json_report(self, scan_results: Dict[str, ScanResult], risk_analysis: Dict[str, Any]) -> None:
+        """Generate JSON report"""
+        report_data = {
+            "scan_metadata": {
+                "target": self.config.target,
+                "scan_date": datetime.now().isoformat(),
+                "scan_profile": self.config.scan_profile
+            },
+            "risk_analysis": risk_analysis,
+            "scan_results": {
+                name: {
+                    "status": result.status,
+                    "duration": result.duration(),
+                    "data": result.data
+                } for name, result in scan_results.items()
+            }
+        }
+        
+        content = json.dumps(report_data, indent=2, default=str)
+        with open(f"{self.config.output_dir}/reports/comprehensive_report.json", 'w') as f:
+            f.write(content)
+    
+    async def _generate_text_report(self, scan_results: Dict[str, ScanResult], risk_analysis: Dict[str, Any]) -> None:
+        """Generate text report"""
+        report_lines = [
+            "=" * 80,
+            "BCAR SECURITY ASSESSMENT REPORT",
+            "=" * 80,
+            "",
+            f"Target: {self.config.target}",
+            f"Scan Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Risk Level: {risk_analysis.get('risk_level', 'Unknown').upper()}",
+            f"Overall Risk Score: {risk_analysis.get('overall_risk_score', 0):.1f}/10",
+            ""
+        ]
+        
+        content = "\n".join(report_lines)
+        with open(f"{self.config.output_dir}/reports/security_assessment_report.txt", 'w') as f:
+            f.write(content)
+    
+    async def _generate_executive_summary(self, risk_analysis: Dict[str, Any]) -> None:
+        """Generate executive summary"""
+        summary_lines = [
+            "EXECUTIVE SUMMARY",
+            "=" * 50,
+            "",
+            f"Target System: {self.config.target}",
+            f"Risk Level: {risk_analysis.get('risk_level', 'Unknown').upper()}",
+            f"Risk Score: {risk_analysis.get('overall_risk_score', 0):.1f}/10"
+        ]
+        
+        content = "\n".join(summary_lines)
+        with open(f"{self.config.output_dir}/reports/executive_summary.txt", 'w') as f:
+            f.write(content)
 
 class BCAR:
     """Main BCAR application with Rich TUI interface"""
@@ -1060,9 +2317,12 @@ class BCAR:
             "Web": WebScanner,
             "DOM": DOMScanner,
             "Vulnerabilities": VulnerabilityScanner,
-            "SSL": SSLScanner
+            "SSL": SSLScanner,
+            "Intelligence": IntelligenceGatherer,
+            "API_Discovery": APIDiscoveryScanner
         }
-        self.scan_results: Dict[str, Any] = {}
+        self.scan_results: Dict[str, ScanResult] = {}
+        self.overall_scan_start: Optional[datetime] = None
         
         # Load configuration
         self.config.load_from_file()
@@ -1236,49 +2496,70 @@ class BCAR:
                 Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
     
     async def start_scan(self):
-        """Start the reconnaissance scan"""
+        """Start the enhanced reconnaissance scan with risk analysis"""
         if not self.config.target:
             self.console.print("[red]✗ No target configured! Please set a target first.[/red]")
             Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
             return
         
         self.console.clear()
-        self.console.print("[cyan]═══ Scan Summary ═══[/cyan]\n")
+        self.console.print("[cyan]═══ Enhanced Scan Summary ═══[/cyan]\n")
         
         summary_table = Table(box=box.ROUNDED)
         summary_table.add_column("Setting", style="white")
         summary_table.add_column("Value", style="green")
         
         summary_table.add_row("Target", self.config.target)
+        summary_table.add_row("Scan Profile", self.config.scan_profile)
         summary_table.add_row("Output Directory", self.config.output_dir)
         summary_table.add_row("Threads", str(self.config.threads))
         summary_table.add_row("Timing", self.config.timing)
         summary_table.add_row("Stealth Mode", "Yes" if self.config.stealth_mode else "No")
+        summary_table.add_row("Intelligence Gathering", "Yes" if self.config.intelligence_enabled else "No")
+        summary_table.add_row("API Discovery", "Yes" if self.config.api_discovery_enabled else "No")
         
         self.console.print(summary_table)
         
-        if not Confirm.ask("\n[yellow]Start reconnaissance scan?[/yellow]"):
+        if not Confirm.ask("\n[yellow]Start enhanced reconnaissance scan?[/yellow]"):
             return
+        
+        # Validate configuration
+        config_issues = self.config.validate_config()
+        if config_issues:
+            self.console.print("[red]Configuration issues found:[/red]")
+            for issue in config_issues:
+                self.console.print(f"  - {issue}")
+            if not Confirm.ask("Continue with current configuration?"):
+                return
         
         # Create output directory
         os.makedirs(self.config.output_dir, exist_ok=True)
         
-        # Initialize results
-        self.scan_results = {
-            "target": self.config.target,
-            "start_time": datetime.now().isoformat(),
-            "config": self.config.__dict__.copy(),
-            "results": {}
-        }
+        # Initialize enhanced results tracking
+        self.scan_results = {}
+        self.overall_scan_start = datetime.now()
         
-        # Run scanners
-        selected_scanners = ["DNS", "WHOIS", "Ports", "Web"]
+        # Determine which scanners to run based on configuration
+        selected_scanners = ["DNS", "WHOIS", "Ports"]
+        
+        # Add optional scanners based on configuration
+        if self.config.intelligence_enabled:
+            selected_scanners.append("Intelligence")
+        
+        selected_scanners.extend(["Web"])
+        
         if self.config.dom_scan_enabled:
             selected_scanners.append("DOM")
+        
+        if self.config.api_discovery_enabled:
+            selected_scanners.append("API_Discovery")
+            
         selected_scanners.extend(["Vulnerabilities", "SSL"])
         
-        self.console.print(f"\n[green]🚀 Starting scan against {self.config.target}...[/green]\n")
+        self.console.print(f"\n[green]🚀 Starting enhanced scan against {self.config.target}...[/green]")
+        self.console.print(f"[cyan]Scanners: {', '.join(selected_scanners)}[/cyan]\n")
         
+        # Execute scanners with enhanced error handling
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -1287,32 +2568,147 @@ class BCAR:
             console=self.console
         ) as progress:
             
-            main_task = progress.add_task("Overall Progress", total=len(selected_scanners))
+            main_task = progress.add_task("Overall Progress", total=len(selected_scanners) + 2)  # +2 for analysis and reporting
             
             for scanner_name in selected_scanners:
                 scanner_class = self.scanners[scanner_name]
                 scanner = scanner_class(self.config, self.console)
                 
-                try:
-                    results = await scanner.run()
-                    self.scan_results["results"][scanner_name.lower()] = results
-                    progress.update(main_task, advance=1, description=f"Completed {scanner_name} scan")
-                    
-                except Exception as e:
-                    logging.error(f"{scanner_name} scan failed: {e}")
-                    self.scan_results["results"][scanner_name.lower()] = {"error": str(e)}
-                    progress.update(main_task, advance=1, description=f"{scanner_name} scan failed")
+                # Run scanner with enhanced error handling
+                scan_result = await scanner.run_with_error_handling()
+                self.scan_results[scanner_name] = scan_result
+                
+                progress.update(main_task, advance=1, description=f"Completed {scanner_name}")
+            
+            # Perform risk analysis
+            progress.update(main_task, description="Performing risk analysis...")
+            risk_analyzer = RiskAnalyzer(self.console)
+            risk_analysis = risk_analyzer.analyze_scan_results(self.scan_results)
+            progress.update(main_task, advance=1)
+            
+            # Generate comprehensive reports
+            progress.update(main_task, description="Generating reports...")
+            report_generator = ReportGenerator(self.config, self.console)
+            await report_generator.generate_comprehensive_report(self.scan_results, risk_analysis)
+            progress.update(main_task, advance=1)
         
-        # Complete scan
-        self.scan_results["end_time"] = datetime.now().isoformat()
-        
-        # Save results
-        await self._save_results()
-        
-        # Display summary
-        self._display_scan_summary()
+        # Display enhanced summary with risk analysis
+        await self._display_enhanced_summary(risk_analysis)
         
         Prompt.ask("\n[yellow]Press Enter to continue[/yellow]", default="")
+    
+    async def _display_enhanced_summary(self, risk_analysis: Dict[str, Any]):
+        """Display enhanced scan summary with risk analysis"""
+        self.console.clear()
+        self.console.print("[cyan]═══ Enhanced Scan Results ═══[/cyan]\n")
+        
+        # Overall scan metrics
+        total_duration = (datetime.now() - self.overall_scan_start).total_seconds()
+        completed_scanners = sum(1 for result in self.scan_results.values() if result.status == "completed")
+        failed_scanners = sum(1 for result in self.scan_results.values() if result.status == "failed")
+        
+        # Scan summary table
+        summary_table = Table(title="Scan Summary", box=box.ROUNDED)
+        summary_table.add_column("Metric", style="cyan")
+        summary_table.add_column("Value", style="white")
+        
+        summary_table.add_row("Target", self.config.target)
+        summary_table.add_row("Total Duration", f"{total_duration:.1f}s")
+        summary_table.add_row("Scanners Completed", f"{completed_scanners}/{len(self.scan_results)}")
+        summary_table.add_row("Scanners Failed", str(failed_scanners))
+        summary_table.add_row("Output Directory", self.config.output_dir)
+        
+        self.console.print(summary_table)
+        self.console.print()
+        
+        # Risk analysis summary
+        risk_level = risk_analysis.get("risk_level", "unknown")
+        risk_score = risk_analysis.get("overall_risk_score", 0)
+        
+        # Color-code risk level
+        risk_colors = {
+            "critical": "red",
+            "high": "orange",
+            "medium": "yellow", 
+            "low": "green",
+            "minimal": "bright_green"
+        }
+        risk_color = risk_colors.get(risk_level, "white")
+        
+        risk_table = Table(title="Risk Assessment", box=box.ROUNDED)
+        risk_table.add_column("Risk Metric", style="cyan")
+        risk_table.add_column("Value", style="white")
+        
+        risk_table.add_row("Overall Risk Level", f"[{risk_color}]{risk_level.upper()}[/{risk_color}]")
+        risk_table.add_row("Risk Score", f"{risk_score:.1f}/10")
+        
+        # Severity breakdown
+        breakdown = risk_analysis["severity_breakdown"]
+        risk_table.add_row("Critical Findings", f"[red]{breakdown['critical']}[/red]")
+        risk_table.add_row("High Risk Findings", f"[orange]{breakdown['high']}[/orange]")
+        risk_table.add_row("Medium Risk Findings", f"[yellow]{breakdown['medium']}[/yellow]")
+        risk_table.add_row("Low Risk Findings", f"[green]{breakdown['low']}[/green]")
+        
+        self.console.print(risk_table)
+        self.console.print()
+        
+        # Top recommendations
+        recommendations = risk_analysis.get("recommendations", [])
+        if recommendations:
+            rec_table = Table(title="Top Security Recommendations", box=box.ROUNDED)
+            rec_table.add_column("#", style="cyan", width=3)
+            rec_table.add_column("Recommendation", style="white")
+            
+            for i, rec in enumerate(recommendations[:5], 1):
+                rec_table.add_row(str(i), rec)
+            
+            self.console.print(rec_table)
+            self.console.print()
+        
+        # Scanner status
+        scanner_table = Table(title="Scanner Results", box=box.ROUNDED)
+        scanner_table.add_column("Scanner", style="cyan")
+        scanner_table.add_column("Status", style="white")
+        scanner_table.add_column("Duration", style="white")
+        scanner_table.add_column("Findings", style="white")
+        
+        for scanner_name, result in self.scan_results.items():
+            status_style = "green" if result.status == "completed" else "red"
+            status_text = f"[{status_style}]{result.status}[/{status_style}]"
+            
+            # Count findings
+            findings_count = 0
+            if result.data:
+                # Simple heuristic to count findings
+                findings_count = sum(len(v) if isinstance(v, list) else 1 for v in result.data.values() if v)
+            
+            scanner_table.add_row(
+                scanner_name,
+                status_text,
+                f"{result.duration():.1f}s",
+                str(findings_count)
+            )
+        
+        self.console.print(scanner_table)
+        
+        # Critical findings alert
+        critical_findings = risk_analysis.get("critical_findings", [])
+        if critical_findings:
+            self.console.print()
+            self.console.print(Panel(
+                "\n".join([f"• {finding}" for finding in critical_findings[:5]]),
+                title="[red bold]⚠️  CRITICAL SECURITY ISSUES ⚠️[/red bold]",
+                border_style="red"
+            ))
+        
+        # Success message
+        self.console.print(f"\n[green]✅ Enhanced scan completed successfully![/green]")
+        self.console.print(f"[green]📁 All results saved to: {self.config.output_dir}[/green]")
+        
+        if risk_level in ["critical", "high"]:
+            self.console.print(f"[red]⚠️  URGENT: This system requires immediate security attention![/red]")
+        elif risk_level == "medium":
+            self.console.print(f"[yellow]⚠️  NOTICE: Security improvements recommended[/yellow]")
     
     async def _save_results(self):
         """Save scan results to files"""
