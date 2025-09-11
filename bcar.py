@@ -3,7 +3,7 @@
 BlackCell Auto Recon (BCAR) - Advanced Python Version
 Author: BlackCell Security
 Description: Comprehensive automated reconnaissance tool with professional TUI interface
-Version: 2.0.0
+Version: 2.1.0 - Enhanced Edition
 """
 
 import asyncio
