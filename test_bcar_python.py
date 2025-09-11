@@ -46,7 +46,7 @@ async def test_basic_functionality():
     bcar = BCAR()
     assert bcar.config is not None
     assert bcar.console is not None
-    assert len(bcar.scanners) == 7  # DNS, WHOIS, Ports, Web, DOM, Vulnerabilities, SSL
+    assert len(bcar.scanners) == 9  # DNS, WHOIS, Ports, Web, DOM, Vulnerabilities, SSL, Intelligence, API_Discovery
     console.print("[green]✓ BCAR initializes correctly[/green]")
     
     # Test 4: Scanner validation
