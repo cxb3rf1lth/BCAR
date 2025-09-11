@@ -12,10 +12,18 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+import socket
+import ssl
+import uuid
+import hashlib
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 import logging
+import re
+import ipaddress
+from dataclasses import dataclass, asdict
+from enum import Enum
 
 # Rich TUI imports
 from rich.console import Console, Group
@@ -29,38 +37,235 @@ from rich.text import Text
 from rich.tree import Tree
 from rich import box
 
-# Configure logging
+# Try to import additional libraries for enhanced features
+try:
+    import aiofiles
+    import aiohttp
+    import dns.resolver
+    HAS_ENHANCED_LIBS = True
+except ImportError:
+    HAS_ENHANCED_LIBS = False
+
+# Configure logging with enhanced format
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
     handlers=[
         logging.FileHandler('bcar.log'),
         logging.StreamHandler()
     ]
 )
 
+# Enhanced data structures
+class ScanResult:
+    """Enhanced scan result structure"""
+    def __init__(self, scanner_name: str):
+        self.scanner_name = scanner_name
+        self.start_time = datetime.now()
+        self.end_time: Optional[datetime] = None
+        self.status = "running"  # running, completed, failed, skipped
+        self.data: Dict[str, Any] = {}
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self.metadata: Dict[str, Any] = {}
+        
+    def complete(self, data: Dict[str, Any], status: str = "completed"):
+        self.end_time = datetime.now()
+        self.data = data
+        self.status = status
+        
+    def add_error(self, error: str):
+        self.errors.append(error)
+        logging.error(f"{self.scanner_name}: {error}")
+        
+    def add_warning(self, warning: str):
+        self.warnings.append(warning)
+        logging.warning(f"{self.scanner_name}: {warning}")
+        
+    def duration(self) -> float:
+        if self.end_time:
+            return (self.end_time - self.start_time).total_seconds()
+        return (datetime.now() - self.start_time).total_seconds()
+
+class ScanPhase(Enum):
+    """Scan phases for better organization"""
+    VALIDATION = "validation"
+    DNS_RECON = "dns_recon"
+    WHOIS_LOOKUP = "whois_lookup"
+    PORT_SCANNING = "port_scanning"
+    SERVICE_DETECTION = "service_detection"
+    WEB_SCANNING = "web_scanning"
+    VULNERABILITY_SCANNING = "vulnerability_scanning"
+    SSL_ANALYSIS = "ssl_analysis"
+    DOM_ANALYSIS = "dom_analysis"
+    INTELLIGENCE_GATHERING = "intelligence_gathering"
+    REPORTING = "reporting"
+
+@dataclass
+class RetryConfig:
+    """Configuration for retry mechanisms"""
+    max_attempts: int = 3
+    backoff_factor: float = 2.0
+    initial_delay: float = 1.0
+    max_delay: float = 60.0
+    exceptions: tuple = (Exception,)
+
+class EnhancedError(Exception):
+    """Enhanced error class with context"""
+    def __init__(self, message: str, error_code: str = None, context: Dict[str, Any] = None):
+        super().__init__(message)
+        self.error_code = error_code or "GENERAL_ERROR"
+        self.context = context or {}
+        self.timestamp = datetime.now()
+
+async def retry_async(func, config: RetryConfig, *args, **kwargs):
+    """Enhanced async retry mechanism"""
+    last_exception = None
+    delay = config.initial_delay
+    
+    for attempt in range(config.max_attempts):
+        try:
+            return await func(*args, **kwargs)
+        except config.exceptions as e:
+            last_exception = e
+            if attempt == config.max_attempts - 1:
+                break
+                
+            logging.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
+            await asyncio.sleep(delay)
+            delay = min(delay * config.backoff_factor, config.max_delay)
+    
+    raise last_exception
+
 class BCARConfig:
-    """Configuration management for BCAR"""
+    """Enhanced configuration management for BCAR"""
     
     def __init__(self):
         self.target: Optional[str] = None
         self.output_dir: str = f"bcar_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.threads: int = 50
-        self.timing: str = "normal"  # slow, normal, fast
+        self.timing: str = "normal"  # slow, normal, fast, aggressive
         self.stealth_mode: bool = False
-        self.output_format: str = "json"  # txt, json, both
+        self.output_format: str = "json"  # txt, json, both, xml
         self.dom_scan_enabled: bool = True
         self.dom_headless: bool = True
         self.nmap_scripts: str = "default,vuln"
         self.wordlist: Optional[str] = None
         self.verbose: bool = False
         
-        # Advanced Python features
+        # Enhanced Python features
         self.max_retries: int = 3
-        self.timeout: int = 30
-        self.user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) BCAR/2.0"
-        self.dns_servers: List[str] = ["8.8.8.8", "1.1.1.1"]
+        self.timeout: int = 60  # Increased default timeout
+        self.user_agent: str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 BCAR/2.1"
+        self.dns_servers: List[str] = ["8.8.8.8", "1.1.1.1", "208.67.222.222"]
         self.skip_phases: List[str] = []
+        
+        # New advanced features
+        self.intelligence_enabled: bool = True
+        self.subdomain_enum_enabled: bool = True
+        self.cve_lookup_enabled: bool = True
+        self.threat_intel_enabled: bool = False
+        self.api_discovery_enabled: bool = True
+        self.screenshot_enabled: bool = False
+        self.backup_results: bool = True
+        self.result_comparison: bool = True
+        
+        # Performance optimizations
+        self.async_dns_enabled: bool = HAS_ENHANCED_LIBS
+        self.connection_pooling: bool = True
+        self.rate_limiting: bool = True
+        self.memory_efficient: bool = True
+        
+        # Security enhancements
+        self.input_sanitization: bool = True
+        self.safe_file_operations: bool = True
+        self.secure_networking: bool = True
+        
+        # Scan profiles
+        self.scan_profile: str = "comprehensive"  # quick, comprehensive, stealth, aggressive
+        
+        # Risk assessment
+        self.risk_assessment_enabled: bool = True
+        self.auto_recommendations: bool = True
+        
+        # Reporting enhancements
+        self.executive_summary: bool = True
+        self.technical_details: bool = True
+        self.compliance_checks: bool = False
+        
+        # Initialize scan profile
+        self._apply_scan_profile()
+        
+    def _apply_scan_profile(self):
+        """Apply predefined scan profile configurations"""
+        profiles = {
+            "quick": {
+                "timing": "fast",
+                "threads": 100,
+                "stealth_mode": False,
+                "dom_scan_enabled": False,
+                "subdomain_enum_enabled": False,
+                "api_discovery_enabled": False,
+                "nmap_scripts": "default"
+            },
+            "comprehensive": {
+                "timing": "normal",
+                "threads": 50,
+                "stealth_mode": False,
+                "dom_scan_enabled": True,
+                "subdomain_enum_enabled": True,
+                "api_discovery_enabled": True,
+                "nmap_scripts": "default,vuln,safe"
+            },
+            "stealth": {
+                "timing": "slow",
+                "threads": 10,
+                "stealth_mode": True,
+                "dom_scan_enabled": False,
+                "rate_limiting": True,
+                "nmap_scripts": "safe"
+            },
+            "aggressive": {
+                "timing": "fast",
+                "threads": 200,
+                "stealth_mode": False,
+                "dom_scan_enabled": True,
+                "api_discovery_enabled": True,
+                "nmap_scripts": "default,vuln,exploit"
+            }
+        }
+        
+        if self.scan_profile in profiles:
+            profile_config = profiles[self.scan_profile]
+            for key, value in profile_config.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+    
+    def set_scan_profile(self, profile: str):
+        """Set and apply a scan profile"""
+        self.scan_profile = profile
+        self._apply_scan_profile()
+        
+    def validate_config(self) -> List[str]:
+        """Validate configuration and return any issues"""
+        issues = []
+        
+        if not self.target:
+            issues.append("Target is required")
+            
+        if self.threads < 1 or self.threads > 1000:
+            issues.append("Threads must be between 1 and 1000")
+            
+        if self.timing not in ["slow", "normal", "fast", "aggressive"]:
+            issues.append("Invalid timing value")
+            
+        if self.timeout < 1 or self.timeout > 3600:
+            issues.append("Timeout must be between 1 and 3600 seconds")
+            
+        if self.wordlist and not os.path.exists(self.wordlist):
+            issues.append(f"Wordlist file not found: {self.wordlist}")
+            
+        return issues
         
     def load_from_file(self, config_path: str = "bcar_config.json") -> None:
         """Load configuration from JSON file"""
@@ -91,41 +296,169 @@ class BCARConfig:
         self.__init__()
 
 class Scanner:
-    """Base class for all scanning modules"""
+    """Enhanced base class for all scanning modules"""
     
     def __init__(self, config: BCARConfig, console: Console):
         self.config = config
         self.console = console
         self.results: Dict[str, Any] = {}
+        self.scan_result = ScanResult(self.__class__.__name__)
+        self.retry_config = RetryConfig()
         
     async def run(self) -> Dict[str, Any]:
         """Run the scanner - to be implemented by subclasses"""
         raise NotImplementedError
         
+    async def run_with_error_handling(self) -> ScanResult:
+        """Run scanner with comprehensive error handling"""
+        try:
+            self.console.print(f"[cyan]Starting {self.scan_result.scanner_name}...[/cyan]")
+            data = await retry_async(self.run, self.retry_config)
+            self.scan_result.complete(data, "completed")
+            self.console.print(f"[green]✓ {self.scan_result.scanner_name} completed successfully[/green]")
+        except Exception as e:
+            error_msg = f"Scanner failed: {str(e)}"
+            self.scan_result.add_error(error_msg)
+            self.scan_result.complete({}, "failed")
+            self.console.print(f"[red]✗ {self.scan_result.scanner_name} failed: {e}[/red]")
+        
+        return self.scan_result
+        
+    async def safe_command_execution(self, cmd: List[str], timeout: Optional[int] = None) -> tuple:
+        """Execute commands safely with proper error handling and timeout"""
+        if timeout is None:
+            timeout = self.config.timeout
+            
+        try:
+            # Sanitize command arguments if enabled
+            if self.config.input_sanitization:
+                cmd = [arg for arg in cmd if self._is_safe_argument(arg)]
+            
+            result = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                ),
+                timeout=timeout
+            )
+            
+            stdout, stderr = await result.communicate()
+            return result.returncode, stdout.decode('utf-8', errors='ignore'), stderr.decode('utf-8', errors='ignore')
+            
+        except asyncio.TimeoutError:
+            raise EnhancedError(f"Command timed out after {timeout}s", "TIMEOUT_ERROR", {"cmd": cmd})
+        except Exception as e:
+            raise EnhancedError(f"Command execution failed: {e}", "EXECUTION_ERROR", {"cmd": cmd})
+    
+    def _is_safe_argument(self, arg: str) -> bool:
+        """Check if command argument is safe"""
+        dangerous_patterns = [
+            r'[;&|`$\(\)<>\n\r]',  # Shell metacharacters
+            r'\.\./',  # Path traversal
+            r'^\-',  # Starts with dash (potential flag confusion)
+        ]
+        
+        for pattern in dangerous_patterns:
+            if re.search(pattern, arg):
+                return False
+        return True
+        
+    async def safe_file_operation(self, operation: str, file_path: str, content: str = "") -> Union[bool, str]:
+        """Perform file operations safely"""
+        if not self.config.safe_file_operations:
+            return False
+            
+        try:
+            # Validate file path
+            safe_path = Path(file_path).resolve()
+            output_base = Path(self.config.output_dir).resolve()
+            
+            # Ensure file is within output directory (prevent path traversal)
+            if not str(safe_path).startswith(str(output_base)):
+                raise EnhancedError("Path traversal attempt detected", "SECURITY_ERROR", {"path": file_path})
+            
+            # Ensure directory exists
+            safe_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if operation == "write":
+                if HAS_ENHANCED_LIBS:
+                    async with aiofiles.open(safe_path, 'w') as f:
+                        await f.write(content)
+                else:
+                    with open(safe_path, 'w') as f:
+                        f.write(content)
+                return True
+            elif operation == "read":
+                if HAS_ENHANCED_LIBS:
+                    async with aiofiles.open(safe_path, 'r') as f:
+                        return await f.read()
+                else:
+                    with open(safe_path, 'r') as f:
+                        return f.read()
+            
+            return True
+            
+        except Exception as e:
+            self.scan_result.add_error(f"File operation failed: {e}")
+            return False
+            
     def validate_target(self, target: str) -> bool:
-        """Validate target format (IP or domain)"""
-        import re
-        import ipaddress
+        """Enhanced target validation with security checks"""
+        if not target or not isinstance(target, str):
+            return False
+        
+        target = target.strip()
+        
+        # Security: Prevent command injection
+        if self.config.input_sanitization:
+            dangerous_chars = [';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r']
+            if any(char in target for char in dangerous_chars):
+                return False
         
         # First try to validate as IP address using ipaddress module for accuracy
         try:
-            ipaddress.ip_address(target)
+            ip = ipaddress.ip_address(target)
+            # Security check: reject certain IP ranges if configured
+            if self.config.secure_networking:
+                # Reject multicast, reserved, etc. for external scanning
+                if ip.is_multicast or ip.is_reserved:
+                    return False
             return True
         except ValueError:
             pass
         
         # Enhanced domain validation - must not start or end with hyphen or dot
-        domain_pattern = r'^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
-        
-        # Simple domain without dots (like localhost) - no hyphens at start/end
-        simple_domain = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
-        
+        # Domain names can be up to 253 characters, with each label up to 63 characters
+        if len(target) > 253:
+            return False
+            
         # Additional validation - no consecutive dots, no leading/trailing dots, no empty
-        if not target or '..' in target or target.startswith('.') or target.endswith('.') or target.startswith('-') or target.endswith('-'):
+        if '..' in target or target.startswith('.') or target.endswith('.') or target.startswith('-') or target.endswith('-'):
             return False
         
-        # Check domain patterns
-        return bool(re.match(domain_pattern, target) or re.match(simple_domain, target))
+        # Split into labels and validate each
+        labels = target.split('.')
+        for label in labels:
+            if not label:  # Empty label
+                return False
+            if len(label) > 63:  # Label too long
+                return False
+            if label.startswith('-') or label.endswith('-'):  # Invalid hyphen placement
+                return False
+            if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$', label):
+                return False
+        
+        # For single labels (like localhost), apply additional checks
+        if len(labels) == 1:
+            return re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$', target) is not None
+        
+        # For domains, the TLD should be at least 2 characters and all letters
+        tld = labels[-1]
+        if len(tld) < 2 or not tld.isalpha():
+            return False
+        
+        return True
 
 class DNSScanner(Scanner):
     """DNS enumeration and zone transfer testing"""
@@ -284,90 +617,6 @@ class WhoisScanner(Scanner):
         return whois_results
 
 class PortScanner(Scanner):
-    """WHOIS information gathering"""
-    
-    async def run(self) -> Dict[str, Any]:
-        """Perform WHOIS lookup"""
-        self.console.print("[cyan]🔍 Starting WHOIS analysis...[/cyan]")
-        
-        whois_results = {
-            "domain_info": {},
-            "registrar": {},
-            "dates": {},
-            "contacts": {},
-            "nameservers": [],
-            "raw_output": ""
-        }
-        
-        try:
-            # Create output directory
-            os.makedirs(f"{self.config.output_dir}/whois", exist_ok=True)
-            
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                console=self.console
-            ) as progress:
-                
-                task = progress.add_task("Performing WHOIS lookup...", total=100)
-                
-                # Run whois command
-                cmd = ["whois", self.config.target]
-                result = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                
-                stdout, stderr = await result.communicate()
-                progress.update(task, advance=50)
-                
-                if result.returncode == 0 and stdout:
-                    whois_output = stdout.decode()
-                    whois_results["raw_output"] = whois_output
-                    
-                    # Save raw output to file
-                    with open(f"{self.config.output_dir}/whois/whois_info.txt", 'w') as f:
-                        f.write(whois_output)
-                    
-                    # Parse WHOIS information (basic parsing)
-                    lines = whois_output.lower().split('\n')
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            key = key.strip()
-                            value = value.strip()
-                            
-                            # Extract key information
-                            if 'registrar' in key and value:
-                                whois_results["registrar"]["name"] = value
-                            elif 'creation' in key or 'created' in key:
-                                whois_results["dates"]["created"] = value
-                            elif 'expir' in key:
-                                whois_results["dates"]["expires"] = value
-                            elif 'updated' in key or 'modified' in key:
-                                whois_results["dates"]["updated"] = value
-                            elif 'name server' in key or 'nserver' in key:
-                                if value not in whois_results["nameservers"]:
-                                    whois_results["nameservers"].append(value)
-                    
-                    progress.update(task, advance=50)
-                    self.console.print(f"[green]✓ WHOIS data retrieved for {self.config.target}[/green]")
-                else:
-                    self.console.print("[yellow]⚠️  WHOIS lookup failed or no data available[/yellow]")
-        
-        except Exception as e:
-            logging.error(f"WHOIS lookup failed: {e}")
-            whois_results["error"] = str(e)
-        
-        self.results = whois_results
-        return whois_results
-
-
     """Network port scanning with Nmap"""
     
     async def run(self) -> Dict[str, Any]:
