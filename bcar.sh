@@ -510,13 +510,13 @@ dom_security_scan() {
             # Run DOMscan with different configurations based on mode
             if [[ "$STEALTH_MODE" == "true" ]]; then
                 # Stealth mode - more conservative scanning
-                $domscan_cmd "$url" $domscan_opts --throttle > "$OUTPUT_DIR/dom_security/domscan_${port}.txt" 2>/dev/null || {
+                $domscan_cmd "$url" "$domscan_opts" --throttle > "$OUTPUT_DIR/dom_security/domscan_${port}.txt" 2>/dev/null || {
                     log "WARNING" "DOMscan failed for $url"
                     continue
                 }
             else
                 # Normal mode - comprehensive scanning
-                $domscan_cmd -g -G "$url" $domscan_opts > "$OUTPUT_DIR/dom_security/domscan_${port}.txt" 2>/dev/null || {
+                $domscan_cmd -g -G "$url" "$domscan_opts" > "$OUTPUT_DIR/dom_security/domscan_${port}.txt" 2>/dev/null || {
                     log "WARNING" "DOMscan failed for $url"
                     continue
                 }
@@ -537,7 +537,7 @@ dom_security_scan() {
                             local test_url="${url}${endpoint}?test=BCAR_TEST"
                             log "INFO" "DOMscan testing endpoint: $endpoint"
                             
-                            $domscan_cmd "$test_url" $domscan_opts > "$OUTPUT_DIR/dom_security/domscan_${port}_${endpoint//\//_}.txt" 2>/dev/null || true
+                            $domscan_cmd "$test_url" "$domscan_opts" > "$OUTPUT_DIR/dom_security/domscan_${port}_${endpoint//\//_}.txt" 2>/dev/null || true
                         fi
                     done <<< "$endpoints"
                 fi
@@ -672,21 +672,27 @@ EOF
         echo '    "a_records": [],' >> "$json_file"
     fi
     
-    echo '    "zone_transfers": []' >> "$json_file"
-    echo '  },' >> "$json_file"
+    {
+        echo '    "zone_transfers": []'
+        echo '  },'
+    } >> "$json_file"
     
     # Add ports section
-    echo '  "ports": {' >> "$json_file"
-    echo '    "open_tcp": [],' >> "$json_file"
-    echo '    "open_udp": []' >> "$json_file"
-    echo '  },' >> "$json_file"
+    {
+        echo '  "ports": {'
+        echo '    "open_tcp": [],'
+        echo '    "open_udp": []'
+        echo '  },'
+    } >> "$json_file"
     
     # Add web services section
     echo '  "web_services": [],' >> "$json_file"
     
     # Add DOM security section
-    echo '  "dom_security": {' >> "$json_file"
-    echo '    "findings": [],' >> "$json_file"
+    {
+        echo '  "dom_security": {'
+        echo '    "findings": [],'
+    } >> "$json_file"
     if [[ -d "$OUTPUT_DIR/dom_security" ]]; then
         echo '    "scanned_urls": [' >> "$json_file"
         find "$OUTPUT_DIR/dom_security" -name "domscan_*.txt" -type f 2>/dev/null | while read -r file; do
@@ -703,12 +709,13 @@ EOF
     else
         echo '    "scanned_urls": []' >> "$json_file"
     fi
-    echo '  },' >> "$json_file"
     
-    # Add vulnerabilities section
-    echo '  "vulnerabilities": []' >> "$json_file"
-    
-    echo '}' >> "$json_file"
+    # Close DOM security and add vulnerabilities section
+    {
+        echo '  },'
+        echo '  "vulnerabilities": []'
+        echo '}'
+    } >> "$json_file"
     
     log "SUCCESS" "JSON report generated: $json_file"
 }
