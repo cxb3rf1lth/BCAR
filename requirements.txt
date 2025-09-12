@@ -1,15 +1,61 @@
-# BCAR Python Requirements
+# BCAR Python Requirements - Enhanced Edition
 # Core TUI and console libraries
 rich>=13.7.0
 
-# Additional useful libraries for advanced features
+# Enhanced async libraries for high-performance scanning
 aiofiles>=23.0.0
 aiohttp>=3.8.0
+asyncio-pool>=0.6.0
+
+# Data processing and analysis
 pyyaml>=6.0
 python-dateutil>=2.8.0
 click>=8.1.0
+pandas>=2.0.0
+numpy>=1.24.0
 
-# Optional dependencies for enhanced functionality  
+# Networking and security libraries
 dnspython>=2.4.0
 cryptography>=41.0.0
 requests>=2.31.0
+urllib3>=2.0.0
+pyopenssl>=23.0.0
+
+# Machine learning and analysis (optional)
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Enhanced data formats and reporting
+jinja2>=3.1.0
+reportlab>=4.0.0
+xlsxwriter>=3.1.0
+
+# Cloud security APIs (optional)
+boto3>=1.26.0
+azure-identity>=1.13.0
+google-cloud-security-center>=1.23.0
+
+# Advanced vulnerability databases
+python-cve>=1.0.0
+vulners>=2.0.0
+
+# Web scraping and analysis
+beautifulsoup4>=4.12.0
+selenium>=4.15.0
+lxml>=4.9.0
+
+# Network analysis
+scapy>=2.5.0
+netaddr>=0.8.0
+ipaddress>=1.0.23
+
+# Enhanced logging and monitoring
+structlog>=23.1.0
+prometheus-client>=0.17.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.7.0
+flake8>=6.0.0
